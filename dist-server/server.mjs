@@ -1,3 +1,10 @@
+var __require = /* @__PURE__ */ ((x) => typeof require !== "undefined" ? require : typeof Proxy !== "undefined" ? new Proxy(x, {
+  get: (a, b) => (typeof require !== "undefined" ? require : a)[b]
+}) : x)(function(x) {
+  if (typeof require !== "undefined") return require.apply(this, arguments);
+  throw Error('Dynamic require of "' + x + '" is not supported');
+});
+
 // server.ts
 import express from "express";
 import path from "path";
@@ -77,12 +84,16 @@ var ACC_TRANSIENT = 128;
 var ACC_NATIVE = 256;
 var ACC_INTERFACE = 512;
 var ACC_ABSTRACT = 1024;
+var ACC_ANNOTATION = 8192;
 var ACC_ENUM = 16384;
 var ByteReader = class {
   constructor(buffer) {
     this.offset = 0;
     const ab = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
     this.view = new DataView(ab);
+  }
+  get currentOffset() {
+    return this.offset;
   }
   get remaining() {
     return this.view.byteLength - this.offset;
@@ -92,13 +103,28 @@ var ByteReader = class {
     this.offset += 1;
     return val;
   }
+  readI1() {
+    const val = this.view.getInt8(this.offset);
+    this.offset += 1;
+    return val;
+  }
   readU2() {
     const val = this.view.getUint16(this.offset, false);
     this.offset += 2;
     return val;
   }
+  readI2() {
+    const val = this.view.getInt16(this.offset, false);
+    this.offset += 2;
+    return val;
+  }
   readU4() {
     const val = this.view.getUint32(this.offset, false);
+    this.offset += 4;
+    return val;
+  }
+  readI4() {
+    const val = this.view.getInt32(this.offset, false);
     this.offset += 4;
     return val;
   }
@@ -110,17 +136,151 @@ var ByteReader = class {
   skip(count) {
     this.offset += count;
   }
+  seek(pos) {
+    this.offset = pos;
+  }
 };
 function isJavaClassBuffer(buf) {
   if (!buf || buf.length < 8) return false;
   return buf[0] === 202 && buf[1] === 254 && buf[2] === 186 && buf[3] === 190;
 }
-function decompileJavaClass(buffer, classNameFallback = "DecompiledClass") {
+function tryDecompileWithCfr(buffer) {
   try {
-    if (!isJavaClassBuffer(buffer)) {
-      return `// Not a valid Java class file (missing CAFEBABE magic header)
-`;
+    if (typeof process === "undefined" || !process.versions?.node) {
+      return null;
     }
+    let execFileSync;
+    let fs2;
+    let path2;
+    let os2;
+    const globalReq = typeof __require !== "undefined" ? __require : typeof globalThis.require !== "undefined" ? globalThis.require : null;
+    if (globalReq) {
+      try {
+        const cp = globalReq("child_process");
+        execFileSync = cp.execFileSync;
+        fs2 = globalReq("fs");
+        path2 = globalReq("path");
+        os2 = globalReq("os");
+      } catch {
+      }
+    }
+    if (!execFileSync && typeof process.getBuiltinModule === "function") {
+      try {
+        const cp = process.getBuiltinModule("child_process");
+        execFileSync = cp.execFileSync;
+        fs2 = process.getBuiltinModule("fs");
+        path2 = process.getBuiltinModule("path");
+        os2 = process.getBuiltinModule("os");
+      } catch {
+      }
+    }
+    if (!execFileSync) {
+      try {
+        const mod = globalThis.module;
+        const createRequire = mod?.createRequire || process.getBuiltinModule?.("module")?.createRequire;
+        if (createRequire) {
+          const req = createRequire((process.cwd?.() || "") + "/");
+          const cp = req("child_process");
+          execFileSync = cp.execFileSync;
+          fs2 = req("fs");
+          path2 = req("path");
+          os2 = req("os");
+        }
+      } catch {
+      }
+    }
+    if (!execFileSync || !fs2 || !path2 || !os2) {
+      return null;
+    }
+    const possibleCfrPaths = [
+      path2.resolve(process.cwd(), "bin", "cfr.jar"),
+      path2.resolve(process.cwd(), "cfr.jar")
+    ];
+    if (typeof __dirname !== "undefined") {
+      possibleCfrPaths.push(
+        path2.resolve(__dirname, "..", "..", "..", "bin", "cfr.jar"),
+        path2.resolve(__dirname, "..", "bin", "cfr.jar"),
+        path2.resolve(__dirname, "bin", "cfr.jar"),
+        path2.resolve(__dirname, "cfr.jar")
+      );
+    }
+    let cfrJarPath = "";
+    for (const p of possibleCfrPaths) {
+      if (fs2.existsSync(p)) {
+        cfrJarPath = p;
+        break;
+      }
+    }
+    if (!cfrJarPath) return null;
+    try {
+      execFileSync("java", ["-version"], {
+        stdio: "ignore",
+        windowsHide: true
+      });
+    } catch {
+      return null;
+    }
+    const tmpDir = fs2.mkdtempSync(path2.join(os2.tmpdir(), "cfr-decompile-"));
+    const tmpClassFile = path2.join(tmpDir, "TargetClass.class");
+    try {
+      fs2.writeFileSync(tmpClassFile, Buffer.from(buffer));
+      const output = execFileSync(
+        "java",
+        [
+          "-jar",
+          cfrJarPath,
+          tmpClassFile,
+          "--comments",
+          "false",
+          "--showversion",
+          "false",
+          "--silent",
+          "true",
+          "--antiobf",
+          "true",
+          "--renamedupmembers",
+          "true",
+          "--renameillegalidents",
+          "true",
+          "--relinkconst",
+          "true",
+          "--recover",
+          "true"
+        ],
+        {
+          encoding: "utf-8",
+          maxBuffer: 10 * 1024 * 1024,
+          timeout: 15e3,
+          windowsHide: true,
+          stdio: ["ignore", "pipe", "ignore"]
+        }
+      );
+      if (output && output.trim().length > 0) {
+        return output.trim();
+      }
+    } finally {
+      try {
+        fs2.rmSync(tmpDir, { recursive: true, force: true });
+      } catch {
+      }
+    }
+  } catch {
+  }
+  return null;
+}
+function decompileJavaClass(buffer, classNameFallback = "DecompiledClass") {
+  if (!isJavaClassBuffer(buffer)) {
+    return `// Not a valid Java class file (missing CAFEBABE magic header)
+`;
+  }
+  const cfrResult = tryDecompileWithCfr(buffer);
+  if (cfrResult) {
+    return cfrResult;
+  }
+  return decompileWithTypeScriptEngine(buffer, classNameFallback);
+}
+function decompileWithTypeScriptEngine(buffer, classNameFallback = "DecompiledClass") {
+  try {
     const reader = new ByteReader(buffer);
     const magic = reader.readU4();
     if (magic !== 3405691582) {
@@ -142,21 +302,25 @@ function decompileJavaClass(buffer, classNameFallback = "DecompiledClass") {
           break;
         }
         case CONSTANT_Integer:
-          cp[i] = { tag, value: reader.readU4() };
+          cp[i] = { tag, value: reader.readI4() };
           break;
         case CONSTANT_Float:
           cp[i] = { tag, value: reader.readU4() };
           break;
-        case CONSTANT_Long:
-          reader.skip(8);
-          cp[i] = { tag, value: "long" };
+        case CONSTANT_Long: {
+          const high = reader.readU4();
+          const low = reader.readU4();
+          cp[i] = { tag, value: `0x${high.toString(16)}${low.toString(16)}L` };
           i++;
           break;
-        case CONSTANT_Double:
-          reader.skip(8);
-          cp[i] = { tag, value: "double" };
+        }
+        case CONSTANT_Double: {
+          const high = reader.readU4();
+          const low = reader.readU4();
+          cp[i] = { tag, value: `double(0x${high.toString(16)}${low.toString(16)})` };
           i++;
           break;
+        }
         case CONSTANT_Class:
           cp[i] = { tag, nameIndex: reader.readU2() };
           break;
@@ -184,18 +348,21 @@ function decompileJavaClass(buffer, classNameFallback = "DecompiledClass") {
           cp[i] = { tag };
           break;
         case CONSTANT_MethodType:
-          reader.skip(2);
-          cp[i] = { tag };
+          cp[i] = { tag, descriptorIndex: reader.readU2() };
           break;
         case CONSTANT_Dynamic:
         case CONSTANT_InvokeDynamic:
-          reader.skip(4);
-          cp[i] = { tag };
+          cp[i] = {
+            tag,
+            bootstrapMethodAttrIndex: reader.readU2(),
+            nameAndTypeIndex: reader.readU2()
+          };
           break;
         case CONSTANT_Module:
+          cp[i] = { tag, nameIndex: reader.readU2() };
+          break;
         case CONSTANT_Package:
-          reader.skip(2);
-          cp[i] = { tag };
+          cp[i] = { tag, nameIndex: reader.readU2() };
           break;
         default:
           break;
@@ -212,6 +379,17 @@ function decompileJavaClass(buffer, classNameFallback = "DecompiledClass") {
       }
       return "";
     };
+    const getConstantValue = (idx) => {
+      const entry = cp[idx];
+      if (!entry) return "";
+      if (entry.tag === CONSTANT_Utf8) return `"${escapeString(entry.value)}"`;
+      if (entry.tag === CONSTANT_String) return `"${escapeString(getUtf8(entry.stringIndex))}"`;
+      if (entry.tag === CONSTANT_Integer) return `${entry.value}`;
+      if (entry.tag === CONSTANT_Long) return `${entry.value}`;
+      if (entry.tag === CONSTANT_Float || entry.tag === CONSTANT_Double) return `${entry.value}`;
+      if (entry.tag === CONSTANT_Class) return `${getClassName(idx)}.class`;
+      return "";
+    };
     const accessFlags = reader.readU2();
     const thisClassIdx = reader.readU2();
     const superClassIdx = reader.readU2();
@@ -225,6 +403,10 @@ function decompileJavaClass(buffer, classNameFallback = "DecompiledClass") {
       if (ifaceName) interfaces.push(ifaceName);
     }
     const javaVersionMap = {
+      45: "Java 1.1",
+      46: "Java 1.2",
+      47: "Java 1.3",
+      48: "Java 1.4",
       49: "Java 5",
       50: "Java 6",
       51: "Java 7",
@@ -243,9 +425,10 @@ function decompileJavaClass(buffer, classNameFallback = "DecompiledClass") {
       64: "Java 20",
       65: "Java 21",
       66: "Java 22",
-      67: "Java 23"
+      67: "Java 23",
+      68: "Java 24"
     };
-    const javaVersionStr = javaVersionMap[majorVersion] || `class version ${majorVersion}.${minorVersion}`;
+    const javaVersionStr = javaVersionMap[majorVersion] || `class format ${majorVersion}.${minorVersion}`;
     const fieldsCount = reader.readU2();
     const fields = [];
     for (let i = 0; i < fieldsCount; i++) {
@@ -254,16 +437,30 @@ function decompileJavaClass(buffer, classNameFallback = "DecompiledClass") {
       const fDesc = getUtf8(reader.readU2());
       const attrCount = reader.readU2();
       let fSig;
+      let constVal;
+      const annotations = [];
       for (let a = 0; a < attrCount; a++) {
         const attrName = getUtf8(reader.readU2());
         const attrLen = reader.readU4();
         if (attrName === "Signature" && attrLen === 2) {
           fSig = getUtf8(reader.readU2());
+        } else if (attrName === "ConstantValue" && attrLen === 2) {
+          constVal = getConstantValue(reader.readU2());
+        } else if (attrName === "RuntimeVisibleAnnotations" || attrName === "RuntimeInvisibleAnnotations") {
+          const annBytes = reader.readBytes(attrLen);
+          annotations.push(...parseAnnotations(annBytes, cp, getUtf8));
         } else {
           reader.skip(attrLen);
         }
       }
-      fields.push({ accessFlags: fFlags, name: fName, descriptor: fDesc, signature: fSig });
+      fields.push({
+        accessFlags: fFlags,
+        name: fName,
+        descriptor: fDesc,
+        signature: fSig,
+        constantValue: constVal,
+        annotations
+      });
     }
     const methodsCount = reader.readU2();
     const methods = [];
@@ -273,26 +470,73 @@ function decompileJavaClass(buffer, classNameFallback = "DecompiledClass") {
       const mDesc = getUtf8(reader.readU2());
       const attrCount = reader.readU2();
       let mSig;
+      const exceptions = [];
+      const annotations = [];
+      let parameterNames;
       let instructions = [];
+      const exceptionTable = [];
       for (let a = 0; a < attrCount; a++) {
         const attrName = getUtf8(reader.readU2());
         const attrLen = reader.readU4();
         if (attrName === "Signature" && attrLen === 2) {
           mSig = getUtf8(reader.readU2());
+        } else if (attrName === "Exceptions") {
+          const numEx = reader.readU2();
+          for (let e = 0; e < numEx; e++) {
+            exceptions.push(getClassName(reader.readU2()));
+          }
+        } else if (attrName === "RuntimeVisibleAnnotations" || attrName === "RuntimeInvisibleAnnotations") {
+          const annBytes = reader.readBytes(attrLen);
+          annotations.push(...parseAnnotations(annBytes, cp, getUtf8));
+        } else if (attrName === "MethodParameters") {
+          const numParams = reader.readU1();
+          const pNames = [];
+          for (let p = 0; p < numParams; p++) {
+            const nameIdx = reader.readU2();
+            reader.skip(2);
+            pNames.push(nameIdx ? getUtf8(nameIdx) : `arg${p}`);
+          }
+          parameterNames = pNames;
         } else if (attrName === "Code") {
           const maxStack = reader.readU2();
           const maxLocals = reader.readU2();
           const codeLen = reader.readU4();
           const codeBytes = reader.readBytes(codeLen);
-          instructions = disassembleBytecode(codeBytes, cp, getUtf8, getClassName);
           const exceptionTableLen = reader.readU2();
-          reader.skip(exceptionTableLen * 8);
-          const codeAttrCount = reader.readU2();
-          for (let ca = 0; ca < codeAttrCount; ca++) {
-            reader.readU2();
-            const caLen = reader.readU4();
-            reader.skip(caLen);
+          for (let e = 0; e < exceptionTableLen; e++) {
+            const startPc = reader.readU2();
+            const endPc = reader.readU2();
+            const handlerPc = reader.readU2();
+            const catchTypeIdx = reader.readU2();
+            exceptionTable.push({
+              startPc,
+              endPc,
+              handlerPc,
+              catchType: catchTypeIdx ? getClassName(catchTypeIdx) : "Throwable (all)"
+            });
           }
+          const codeAttrCount = reader.readU2();
+          const localVars = {};
+          for (let ca = 0; ca < codeAttrCount; ca++) {
+            const cAttrName = getUtf8(reader.readU2());
+            const cAttrLen = reader.readU4();
+            if (cAttrName === "LocalVariableTable") {
+              const lvTableLen = reader.readU2();
+              for (let l = 0; l < lvTableLen; l++) {
+                reader.skip(4);
+                const nameIndex = reader.readU2();
+                reader.skip(2);
+                const index = reader.readU2();
+                const vName = getUtf8(nameIndex);
+                if (vName && vName !== "this") {
+                  localVars[index] = vName;
+                }
+              }
+            } else {
+              reader.skip(cAttrLen);
+            }
+          }
+          instructions = disassembleFullBytecode(codeBytes, cp, getUtf8, getClassName, localVars);
         } else {
           reader.skip(attrLen);
         }
@@ -302,16 +546,49 @@ function decompileJavaClass(buffer, classNameFallback = "DecompiledClass") {
         name: mName,
         descriptor: mDesc,
         signature: mSig,
-        instructions
+        exceptions,
+        annotations,
+        parameterNames,
+        instructions,
+        exceptionTable: exceptionTable.length > 0 ? exceptionTable : void 0
       });
     }
     const classAttrCount = reader.readU2();
     let classSignature;
+    const classAnnotations = [];
+    const recordComponents = [];
+    const innerClassesList = [];
     for (let a = 0; a < classAttrCount; a++) {
       const attrName = getUtf8(reader.readU2());
       const attrLen = reader.readU4();
       if (attrName === "Signature" && attrLen === 2) {
         classSignature = getUtf8(reader.readU2());
+      } else if (attrName === "RuntimeVisibleAnnotations" || attrName === "RuntimeInvisibleAnnotations") {
+        const annBytes = reader.readBytes(attrLen);
+        classAnnotations.push(...parseAnnotations(annBytes, cp, getUtf8));
+      } else if (attrName === "Record") {
+        const compCount = reader.readU2();
+        for (let rc = 0; rc < compCount; rc++) {
+          const rcName = getUtf8(reader.readU2());
+          const rcDesc = getUtf8(reader.readU2());
+          const rcAttrCount = reader.readU2();
+          for (let rca = 0; rca < rcAttrCount; rca++) {
+            reader.readU2();
+            const rcaLen = reader.readU4();
+            reader.skip(rcaLen);
+          }
+          recordComponents.push({ name: rcName, type: cleanTypeName(parseFieldDescriptor(rcDesc)) });
+        }
+      } else if (attrName === "InnerClasses") {
+        const numInners = reader.readU2();
+        for (let inIdx = 0; inIdx < numInners; inIdx++) {
+          const innerClassInfoIdx = reader.readU2();
+          const outerClassInfoIdx = reader.readU2();
+          const innerNameIdx = reader.readU2();
+          reader.skip(2);
+          const innerName = innerNameIdx ? getUtf8(innerNameIdx) : getClassName(innerClassInfoIdx);
+          if (innerName) innerClassesList.push(innerName);
+        }
       } else {
         reader.skip(attrLen);
       }
@@ -324,12 +601,18 @@ function decompileJavaClass(buffer, classNameFallback = "DecompiledClass") {
       fields,
       methods,
       javaVersionStr,
-      classSignature
+      classSignature,
+      classAnnotations,
+      recordComponents,
+      innerClassesList
     });
   } catch (err) {
     return `// Decompiler error: ${err.message || "Failed to parse class file"}
 `;
   }
+}
+function escapeString(str) {
+  return str.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n").replace(/\r/g, "\\r");
 }
 function parseFieldDescriptor(desc) {
   if (!desc) return "void";
@@ -350,6 +633,10 @@ function parseFieldDescriptor(desc) {
     return cleanTypeName(raw);
   }
   return desc;
+}
+function parseSignatureType(sig) {
+  if (!sig) return "";
+  return sig.replace(/L([a-zA-Z0-9_\/$]+);/g, (_, cls) => cleanTypeName(cls.replace(/\//g, "."))).replace(/L([a-zA-Z0-9_\/$]+)</g, (_, cls) => cleanTypeName(cls.replace(/\//g, ".")) + "<").replace(/\//g, ".");
 }
 function cleanTypeName(full) {
   if (full.startsWith("java.lang.") && full.split(".").length === 3) {
@@ -388,6 +675,25 @@ function parseMethodDescriptor(desc) {
     returnType: cleanTypeName(parseFieldDescriptor(rawRet))
   };
 }
+function parseAnnotations(bytes, cp, getUtf8) {
+  const results = [];
+  try {
+    const r = new ByteReader(bytes);
+    if (r.remaining < 2) return results;
+    const numAnnotations = r.readU2();
+    for (let i = 0; i < numAnnotations; i++) {
+      if (r.remaining < 4) break;
+      const typeIdx = r.readU2();
+      const numElementValuePairs = r.readU2();
+      const typeDesc = getUtf8(typeIdx);
+      const annName = "@" + cleanTypeName(parseFieldDescriptor(typeDesc));
+      results.push(numElementValuePairs > 0 ? `${annName}(...)` : annName);
+      break;
+    }
+  } catch {
+  }
+  return results;
+}
 function formatAccessFlags(flags, isClass = false, isInterface = false) {
   const parts = [];
   if (flags & ACC_PUBLIC) parts.push("public");
@@ -402,7 +708,7 @@ function formatAccessFlags(flags, isClass = false, isInterface = false) {
   if (flags & ACC_TRANSIENT) parts.push("transient");
   return parts.join(" ");
 }
-function disassembleBytecode(code, cp, getUtf8, getClassName) {
+function disassembleFullBytecode(code, cp, getUtf8, getClassName, localVars) {
   const statements = [];
   let i = 0;
   const getNameAndType = (idx) => {
@@ -425,13 +731,192 @@ function disassembleBytecode(code, cp, getUtf8, getClassName) {
     return { owner: "", name: "", descriptor: "" };
   };
   while (i < code.length) {
+    const pc = i;
     const op = code[i];
     switch (op) {
       case 0:
+        statements.push(`/* ${pc} */ nop;`);
         i++;
         break;
       case 1:
-        statements.push("// push null");
+        statements.push(`/* ${pc} */ push null;`);
+        i++;
+        break;
+      case 2:
+        statements.push(`/* ${pc} */ push -1;`);
+        i++;
+        break;
+      case 3:
+        statements.push(`/* ${pc} */ push 0;`);
+        i++;
+        break;
+      case 4:
+        statements.push(`/* ${pc} */ push 1;`);
+        i++;
+        break;
+      case 5:
+        statements.push(`/* ${pc} */ push 2;`);
+        i++;
+        break;
+      case 6:
+        statements.push(`/* ${pc} */ push 3;`);
+        i++;
+        break;
+      case 7:
+        statements.push(`/* ${pc} */ push 4;`);
+        i++;
+        break;
+      case 8:
+        statements.push(`/* ${pc} */ push 5;`);
+        i++;
+        break;
+      case 9:
+        statements.push(`/* ${pc} */ push 0L;`);
+        i++;
+        break;
+      case 10:
+        statements.push(`/* ${pc} */ push 1L;`);
+        i++;
+        break;
+      case 11:
+        statements.push(`/* ${pc} */ push 0.0f;`);
+        i++;
+        break;
+      case 12:
+        statements.push(`/* ${pc} */ push 1.0f;`);
+        i++;
+        break;
+      case 13:
+        statements.push(`/* ${pc} */ push 2.0f;`);
+        i++;
+        break;
+      case 14:
+        statements.push(`/* ${pc} */ push 0.0d;`);
+        i++;
+        break;
+      case 15:
+        statements.push(`/* ${pc} */ push 1.0d;`);
+        i++;
+        break;
+      case 16: {
+        const val = code[i + 1] << 24 >> 24;
+        statements.push(`/* ${pc} */ push byte ${val};`);
+        i += 2;
+        break;
+      }
+      case 17: {
+        const val = code[i + 1] << 8 | code[i + 2];
+        statements.push(`/* ${pc} */ push short ${val};`);
+        i += 3;
+        break;
+      }
+      case 18: {
+        const cIdx = code[i + 1];
+        const entry = cp[cIdx];
+        let val = `cp[#${cIdx}]`;
+        if (entry?.tag === CONSTANT_String) val = `"${escapeString(getUtf8(entry.stringIndex))}"`;
+        else if (entry?.tag === CONSTANT_Class) val = `${getClassName(cIdx)}.class`;
+        else if (entry?.value !== void 0) val = `${entry.value}`;
+        statements.push(`/* ${pc} */ ldc ${val};`);
+        i += 2;
+        break;
+      }
+      case 19:
+      case 20: {
+        const cIdx = code[i + 1] << 8 | code[i + 2];
+        const entry = cp[cIdx];
+        let val = `cp[#${cIdx}]`;
+        if (entry?.tag === CONSTANT_String) val = `"${escapeString(getUtf8(entry.stringIndex))}"`;
+        else if (entry?.value !== void 0) val = `${entry.value}`;
+        statements.push(`/* ${pc} */ ldc ${val};`);
+        i += 3;
+        break;
+      }
+      // Loads & Stores
+      case 21:
+      case 22:
+      case 23:
+      case 24:
+      case 25: {
+        const varIdx = code[i + 1];
+        const varName = localVars[varIdx] || `var${varIdx}`;
+        statements.push(`/* ${pc} */ load ${varName};`);
+        i += 2;
+        break;
+      }
+      case 26:
+      case 30:
+      case 34:
+      case 38:
+      case 42:
+        statements.push(`/* ${pc} */ load ${localVars[0] || "var0"};`);
+        i++;
+        break;
+      case 27:
+      case 31:
+      case 35:
+      case 39:
+      case 43:
+        statements.push(`/* ${pc} */ load ${localVars[1] || "var1"};`);
+        i++;
+        break;
+      case 28:
+      case 32:
+      case 36:
+      case 40:
+      case 44:
+        statements.push(`/* ${pc} */ load ${localVars[2] || "var2"};`);
+        i++;
+        break;
+      case 29:
+      case 33:
+      case 37:
+      case 41:
+      case 45:
+        statements.push(`/* ${pc} */ load ${localVars[3] || "var3"};`);
+        i++;
+        break;
+      case 54:
+      case 55:
+      case 56:
+      case 57:
+      case 58: {
+        const varIdx = code[i + 1];
+        const varName = localVars[varIdx] || `var${varIdx}`;
+        statements.push(`/* ${pc} */ store -> ${varName};`);
+        i += 2;
+        break;
+      }
+      case 59:
+      case 63:
+      case 67:
+      case 71:
+      case 75:
+        statements.push(`/* ${pc} */ store -> ${localVars[0] || "var0"};`);
+        i++;
+        break;
+      case 60:
+      case 64:
+      case 68:
+      case 72:
+      case 76:
+        statements.push(`/* ${pc} */ store -> ${localVars[1] || "var1"};`);
+        i++;
+        break;
+      case 61:
+      case 65:
+      case 69:
+      case 73:
+      case 77:
+        statements.push(`/* ${pc} */ store -> ${localVars[2] || "var2"};`);
+        i++;
+        break;
+      case 62:
+      case 66:
+      case 70:
+      case 74:
+      case 78:
+        statements.push(`/* ${pc} */ store -> ${localVars[3] || "var3"};`);
         i++;
         break;
       case 178:
@@ -440,7 +925,7 @@ function disassembleBytecode(code, cp, getUtf8, getClassName) {
         const refIdx = code[i + 1] << 8 | code[i + 2];
         const member = getMemberRef(refIdx);
         const prefix = op === 178 ? member.owner : "this";
-        statements.push(`// access ${prefix}.${member.name} (${cleanTypeName(parseFieldDescriptor(member.descriptor))})`);
+        statements.push(`/* ${pc} */ get ${prefix}.${member.name};`);
         i += 3;
         break;
       }
@@ -450,7 +935,7 @@ function disassembleBytecode(code, cp, getUtf8, getClassName) {
         const refIdx = code[i + 1] << 8 | code[i + 2];
         const member = getMemberRef(refIdx);
         const prefix = op === 179 ? member.owner : "this";
-        statements.push(`// assign ${prefix}.${member.name}`);
+        statements.push(`/* ${pc} */ set ${prefix}.${member.name};`);
         i += 3;
         break;
       }
@@ -463,46 +948,80 @@ function disassembleBytecode(code, cp, getUtf8, getClassName) {
       case 185: {
         const refIdx = code[i + 1] << 8 | code[i + 2];
         const member = getMemberRef(refIdx);
-        const callType = op === 184 ? "static call" : op === 183 ? "special call" : "call";
-        statements.push(`${callType} ${member.owner}.${member.name}(...);`);
+        const callKind = op === 184 ? "static call" : op === 183 ? "special call" : "call";
+        statements.push(`/* ${pc} */ ${callKind} ${member.owner}.${member.name}(...);`);
         i += op === 185 ? 5 : 3;
         break;
       }
-      case 18: {
-        const cIdx = code[i + 1];
-        const cEntry = cp[cIdx];
-        if (cEntry && cEntry.tag === CONSTANT_String) {
-          const s = getUtf8(cEntry.stringIndex);
-          statements.push(`// load string "${s.length > 50 ? s.slice(0, 47) + "..." : s}"`);
-        }
-        i += 2;
+      case 186: {
+        const refIdx = code[i + 1] << 8 | code[i + 2];
+        const entry = cp[refIdx];
+        const nt = entry ? getNameAndType(entry.nameAndTypeIndex) : { name: "lambda", descriptor: "" };
+        statements.push(`/* ${pc} */ dynamic call ${nt.name}(...);`);
+        i += 5;
         break;
       }
       case 187: {
         const classIdx = code[i + 1] << 8 | code[i + 2];
         const clsName = getClassName(classIdx);
-        statements.push(`new ${clsName}();`);
+        statements.push(`/* ${pc} */ new ${clsName}();`);
+        i += 3;
+        break;
+      }
+      case 188: {
+        statements.push(`/* ${pc} */ new primitive array;`);
+        i += 2;
+        break;
+      }
+      case 189: {
+        const classIdx = code[i + 1] << 8 | code[i + 2];
+        statements.push(`/* ${pc} */ new ${getClassName(classIdx)}[];`);
+        i += 3;
+        break;
+      }
+      case 153:
+      case 154:
+      case 155:
+      case 156:
+      case 157:
+      case 158:
+      // ifeq, ifne, iflt, ifge, ifgt, ifle
+      case 159:
+      case 160:
+      case 161:
+      case 162:
+      case 163:
+      case 164:
+      // if_icmpeq, etc.
+      case 165:
+      case 166:
+      case 198:
+      case 199: {
+        const offset = code[i + 1] << 24 >> 16 | code[i + 2];
+        statements.push(`/* ${pc} */ if (condition) goto ${pc + offset};`);
+        i += 3;
+        break;
+      }
+      case 167: {
+        const offset = code[i + 1] << 24 >> 16 | code[i + 2];
+        statements.push(`/* ${pc} */ goto ${pc + offset};`);
         i += 3;
         break;
       }
       case 172:
-      // ireturn
       case 173:
-      // lreturn
       case 174:
-      // freturn
       case 175:
-      // dreturn
       case 176:
-        statements.push("return result;");
+        statements.push(`/* ${pc} */ return value;`);
         i++;
         break;
       case 177:
-        statements.push("return;");
+        statements.push(`/* ${pc} */ return;`);
         i++;
         break;
       case 191:
-        statements.push("throw exception;");
+        statements.push(`/* ${pc} */ throw exception;`);
         i++;
         break;
       default:
@@ -510,18 +1029,7 @@ function disassembleBytecode(code, cp, getUtf8, getClassName) {
         break;
     }
   }
-  const cleaned = [];
-  let lastWasComment = false;
-  for (const s of statements) {
-    if (s.startsWith("//")) {
-      if (!lastWasComment) cleaned.push(s);
-      lastWasComment = true;
-    } else {
-      cleaned.push(s);
-      lastWasComment = false;
-    }
-  }
-  return cleaned.slice(0, 20);
+  return statements;
 }
 function formatJavaSource(info) {
   const parts = info.fullClassName.split(".");
@@ -529,7 +1037,9 @@ function formatJavaSource(info) {
   const packageName = parts.join(".");
   const isInterface = Boolean(info.accessFlags & ACC_INTERFACE);
   const isEnum = Boolean(info.accessFlags & ACC_ENUM);
-  const kind = isInterface ? "interface" : isEnum ? "enum" : "class";
+  const isAnnotation = Boolean(info.accessFlags & ACC_ANNOTATION);
+  const isRecord = Boolean(info.recordComponents && info.recordComponents.length > 0);
+  const kind = isAnnotation ? "@interface" : isInterface ? "interface" : isEnum ? "enum" : isRecord ? "record" : "class";
   const lines = [];
   lines.push(`// Decompiled from Java .class bytecode (${info.javaVersionStr})`);
   lines.push(`// Source: ${info.fullClassName}`);
@@ -538,9 +1048,21 @@ function formatJavaSource(info) {
     lines.push(`package ${packageName};`);
     lines.push("");
   }
+  if (info.classAnnotations && info.classAnnotations.length > 0) {
+    for (const ann of info.classAnnotations) {
+      lines.push(ann);
+    }
+  }
   const classModifier = formatAccessFlags(info.accessFlags, true, isInterface);
   let decl = `${classModifier ? classModifier + " " : ""}${kind} ${simpleName}`;
-  if (info.superClassName && info.superClassName !== "java.lang.Object" && !isInterface && !isEnum) {
+  if (info.classSignature) {
+    decl += ` /* ${parseSignatureType(info.classSignature)} */`;
+  }
+  if (isRecord && info.recordComponents) {
+    const comps = info.recordComponents.map((c) => `${c.type} ${c.name}`).join(", ");
+    decl += `(${comps})`;
+  }
+  if (info.superClassName && info.superClassName !== "java.lang.Object" && !isInterface && !isEnum && !isRecord) {
     decl += ` extends ${info.superClassName}`;
   }
   if (info.interfaces.length > 0) {
@@ -550,9 +1072,13 @@ function formatJavaSource(info) {
   lines.push(decl);
   if (info.fields.length > 0) {
     for (const f of info.fields) {
+      if (f.annotations && f.annotations.length > 0) {
+        for (const ann of f.annotations) lines.push(`    ${ann}`);
+      }
       const fMods = formatAccessFlags(f.accessFlags);
-      const fType = cleanTypeName(parseFieldDescriptor(f.descriptor));
-      lines.push(`    ${fMods ? fMods + " " : ""}${fType} ${f.name};`);
+      const fType = f.signature ? parseSignatureType(f.signature) : cleanTypeName(parseFieldDescriptor(f.descriptor));
+      const init = f.constantValue ? ` = ${f.constantValue}` : "";
+      lines.push(`    ${fMods ? fMods + " " : ""}${fType} ${f.name}${init};`);
     }
     lines.push("");
   }
@@ -562,34 +1088,48 @@ function formatJavaSource(info) {
     if (isClinit) {
       lines.push("    static {");
       if (m.instructions && m.instructions.length > 0) {
-        for (const inst of m.instructions) {
-          lines.push(`        ${inst}`);
-        }
+        for (const inst of m.instructions) lines.push(`        ${inst}`);
       }
       lines.push("    }");
       lines.push("");
       continue;
     }
+    if (m.annotations && m.annotations.length > 0) {
+      for (const ann of m.annotations) lines.push(`    ${ann}`);
+    }
     const mMods = formatAccessFlags(m.accessFlags);
     const { params, returnType } = parseMethodDescriptor(m.descriptor);
     const mName = isInit ? simpleName : m.name;
-    const mRet = isInit ? "" : returnType + " ";
-    const paramStr = params.map((p, idx) => `${p} arg${idx}`).join(", ");
+    const mRet = isInit ? "" : (m.signature ? parseSignatureType(m.signature) : returnType) + " ";
+    const paramStr = params.map((p, idx) => {
+      const name = m.parameterNames && m.parameterNames[idx] ? m.parameterNames[idx] : `arg${idx}`;
+      return `${p} ${name}`;
+    }).join(", ");
+    const throwsStr = m.exceptions && m.exceptions.length > 0 ? ` throws ${m.exceptions.join(", ")}` : "";
     const isAbstract = Boolean(m.accessFlags & ACC_ABSTRACT) || isInterface;
     if (isAbstract) {
-      lines.push(`    ${mMods ? mMods + " " : ""}${mRet}${mName}(${paramStr});`);
+      lines.push(`    ${mMods ? mMods + " " : ""}${mRet}${mName}(${paramStr})${throwsStr};`);
     } else {
-      lines.push(`    ${mMods ? mMods + " " : ""}${mRet}${mName}(${paramStr}) {`);
+      lines.push(`    ${mMods ? mMods + " " : ""}${mRet}${mName}(${paramStr})${throwsStr} {`);
+      if (m.exceptionTable && m.exceptionTable.length > 0) {
+        lines.push("        // Exception Handlers:");
+        for (const ex of m.exceptionTable) {
+          lines.push(`        // try [${ex.startPc}..${ex.endPc}] catch ${ex.catchType} -> handler ${ex.handlerPc}`);
+        }
+      }
       if (m.instructions && m.instructions.length > 0) {
         for (const inst of m.instructions) {
           lines.push(`        ${inst}`);
         }
       } else {
-        lines.push("        // [Compiled method body]");
+        lines.push("        // [Empty / Native method]");
       }
       lines.push("    }");
     }
     lines.push("");
+  }
+  if (info.innerClassesList && info.innerClassesList.length > 0) {
+    lines.push(`    // Inner Classes: ${info.innerClassesList.join(", ")}`);
   }
   lines.push("}");
   return lines.join("\n");
