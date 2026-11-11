@@ -1590,12 +1590,14 @@ ${treeText}`,
   });
   let wasRateLimited = false;
   try {
+    sendProgress(`Connecting to ${owner}/${repo}...`, 0, void 0, "ingesting");
     let resolvedBranch = branch || "";
     let zipRes;
     const zipHeaders = {
       "User-Agent": "GitIngest-Fast"
     };
     if (activeToken) zipHeaders.Authorization = `Bearer ${activeToken}`;
+    sendProgress(`Downloading zipball archive for ${owner}/${repo}...`, 0, void 0, "ingesting");
     if (resolvedBranch) {
       zipRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/zipball/${encodeURIComponent(resolvedBranch)}`, {
         headers: zipHeaders,
@@ -1642,6 +1644,7 @@ ${treeText}`,
       }
     }
     if (zipRes && zipRes.ok) {
+      sendProgress(`Archive downloaded. Extracting and analyzing repository...`, 0, void 0, "ingesting");
       const arrayBuf = await zipRes.arrayBuffer();
       if (arrayBuf.byteLength > 0 && arrayBuf.byteLength < 300 * 1024 * 1024) {
         const zip = await JSZip.loadAsync(arrayBuf);
@@ -1665,7 +1668,7 @@ ${treeText}`,
         let totalChars = 0;
         const MAX_ZIP_DIGEST_CHARS = 40 * 1024 * 1024;
         let isZipTruncated = false;
-        const ZIP_CHUNK = 100;
+        const ZIP_CHUNK = 2;
         for (let i = 0; i < fileEntries.length; i += ZIP_CHUNK) {
           if (clientDisconnected) return;
           if (totalChars >= MAX_ZIP_DIGEST_CHARS) {
@@ -1906,7 +1909,7 @@ ${treeText}`,
     }
     const paths = collectedFiles.map((f) => f.relPath);
     const treeText = buildAsciiTree(subpath || repo, paths);
-    const CHUNK_SIZE = 100;
+    const CHUNK_SIZE = 2;
     const fileContents = [];
     let totalChars = 0;
     const MAX_DIGEST_CHARS = 40 * 1024 * 1024;

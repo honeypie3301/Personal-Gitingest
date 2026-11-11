@@ -312,8 +312,10 @@ app.post('/api/ingest', async (req, res) => {
   const isNdjson = Boolean(req.headers.accept?.includes('application/x-ndjson'));
   if (isNdjson) {
     res.setHeader('Content-Type', 'application/x-ndjson');
-    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders?.();
   }
 
   const sendProgress = (filePath: string, count: number, total?: number, status?: string) => {
@@ -321,6 +323,9 @@ app.post('/api/ingest', async (req, res) => {
       try {
         const cleanPath = filePath.replace(/\s*\[Decompiled Java\]$/i, '');
         res.write(JSON.stringify({ type: 'progress', path: cleanPath, count, total, status }) + '\n');
+        if (typeof (res as any).flush === 'function') {
+          (res as any).flush();
+        }
       } catch {}
     }
   };
@@ -441,6 +446,14 @@ app.post('/api/ingest', async (req, res) => {
             fileContents.push(
               `================================================\nFile: ${fileHeader}\n================================================\n${content}\n`
             );
+            const isClass = fileHeader.includes('[Decompiled Java]');
+            const isBin = content.startsWith('[Binary file');
+            sendProgress(
+              fileHeader,
+              fileContents.length,
+              collectedFiles.length,
+              isClass ? 'decompiling' : isBin ? 'binary' : 'completed'
+            );
           } catch {}
         }
 
@@ -474,7 +487,7 @@ app.post('/api/ingest', async (req, res) => {
           });
         }
 
-        return res.json(responsePayload);
+        return sendResult(responsePayload);
       }
     } catch (err: any) {
       console.error('Local directory read error:', err);
