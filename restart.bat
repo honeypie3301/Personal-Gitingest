@@ -16,9 +16,10 @@ if errorlevel 1 (
 )
 
 REM 3. Restart server with PM2 or Node fallback
-if exist "dist-server\server.mjs" (
-    call pm2 restart gitingest >nul 2>&1 || call pm2 start dist-server/server.mjs --name gitingest --node-args="--expose-gc --max-old-space-size=512" >nul 2>&1 || goto fallback
-    echo GitIngest server restarted at http://localhost:3000
+where pm2 >nul 2>&1
+if %errorlevel% equ 0 (
+    call pm2 restart gitingest >nul 2>&1 || call pm2 start dist-server/server.mjs --name gitingest --node-args="--expose-gc --max-old-space-size=512" >nul 2>&1
+    echo GitIngest server restarted via PM2 at http://localhost:3000
     for /f "tokens=*" %%a in ('git log -1 --oneline') do echo Latest Commit: %%a
     goto end
 )
