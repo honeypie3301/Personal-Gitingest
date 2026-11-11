@@ -7,6 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: write
   contents: read
   pages: write
   id-token: write
@@ -38,6 +39,22 @@ jobs:
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
+
+      # A rerun of all jobs keeps artifacts from the earlier attempt under the same
+      # workflow run ID. Remove only this run's Pages artifacts before uploading a
+      # replacement so deploy-pages sees exactly one artifact named github-pages.
+      - name: Remove previous Pages artifacts for this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          artifact_ids="$(gh api --paginate "repos/${GH_REPO}/actions/runs/${RUN_ID}/artifacts" --jq '.artifacts[] | select(.name == "github-pages") | .id')"
+          while IFS= read -r artifact_id; do
+            if [ -n "$artifact_id" ]; then
+              gh api --method DELETE "repos/${GH_REPO}/actions/artifacts/${artifact_id}"
+            fi
+          done <<< "$artifact_ids"
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
