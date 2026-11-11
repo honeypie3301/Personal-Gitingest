@@ -321,7 +321,7 @@ export const GitForm: React.FC<GitFormProps> = React.memo(({
   };
 
   return (
-    <div className="w-full max-w-5xl 2xl:max-w-6xl mx-auto px-3 sm:px-6">
+    <div className="w-full max-w-5xl 2xl:max-w-6xl mx-auto px-3 sm:px-6 relative z-10">
       {/* Dark Brutalist Shadow Box */}
       <div className="relative">
         <div className="w-full h-full absolute inset-0 bg-black rounded-2xl translate-y-1.5 translate-x-1.5 sm:translate-y-2 sm:translate-x-2"></div>
@@ -541,7 +541,7 @@ export const GitForm: React.FC<GitFormProps> = React.memo(({
 
                     {/* Clean History & Presets Popover */}
                     {isPatternHistoryOpen && (patternFavorites.length > 0 || patternRecents.length > 0) && (
-                      <div className="absolute left-0 top-full mt-2 w-full min-w-[280px] sm:min-w-[340px] max-w-md bg-[#161b22] border-2 border-[#30363d] rounded-lg shadow-[4px_4px_0_0_#000000] p-2 z-50 overflow-hidden text-xs">
+                      <div className="absolute left-0 top-full mt-2 w-full min-w-[280px] sm:min-w-[340px] max-w-md bg-[#161b22] border-2 border-[#30363d] rounded-lg shadow-[4px_4px_0_0_#000000] p-2 z-[200] overflow-y-auto max-h-72 text-xs">
                         {/* Favorites / Presets */}
                         {patternFavorites.length > 0 && (
                           <div className="mb-2">

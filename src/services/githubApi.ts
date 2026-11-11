@@ -251,6 +251,8 @@ export async function ingestViaGitHubApi(
     if (item.type !== 'blob') return false;
     if (!isIncluded(item.path)) return false;
     if (item.size && item.size > maxBytes) return false;
+    // Skip .class files entirely when decompilation is disabled (no fetch needed)
+    if (!req.decompile_classes && item.path.toLowerCase().endsWith('.class')) return false;
     return true;
   });
 
