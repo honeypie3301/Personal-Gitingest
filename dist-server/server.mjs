@@ -1397,7 +1397,8 @@ app.post("/api/ingest", async (req, res) => {
   const authHeader = req.headers.authorization;
   const bearerToken = authHeader && authHeader.startsWith("Bearer ") ? authHeader.substring(7).trim() : null;
   const incomingToken = bearerToken || req.body.token || process.env.GITHUB_TOKEN;
-  const isNdjson = Boolean(req.headers.accept?.includes("application/x-ndjson"));
+  const acceptHeader = (req.headers.accept || "").toLowerCase();
+  const isNdjson = !req.headers["x-no-stream"] && (!acceptHeader || acceptHeader.includes("application/x-ndjson") || acceptHeader.includes("*/*") || acceptHeader.includes("text/event-stream"));
   if (isNdjson) {
     res.setHeader("Content-Type", "application/x-ndjson");
     res.setHeader("Cache-Control", "no-cache, no-transform");
