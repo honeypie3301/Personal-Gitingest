@@ -1,5 +1,12 @@
 export type PatternType = 'exclude' | 'include';
 
+export interface IngestFileEvent {
+  path: string;
+  status: 'ingesting' | 'decompiling' | 'completed' | 'binary';
+  count: number;
+  total?: number;
+}
+
 export interface IngestRequest {
   input_text: string;
   max_file_size?: number; // In MB (legacy checks decoded UTF-16 character length)
@@ -7,6 +14,7 @@ export interface IngestRequest {
   pattern?: string;
   token?: string;
   decompile_classes?: boolean;
+  onProgress?: (event: IngestFileEvent) => void;
 }
 
 export interface IngestResponse {

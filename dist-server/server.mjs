@@ -144,6 +144,19 @@ function isJavaClassBuffer(buf) {
   if (!buf || buf.length < 8) return false;
   return buf[0] === 202 && buf[1] === 254 && buf[2] === 186 && buf[3] === 190;
 }
+var cachedCfrJarPath = void 0;
+var cachedJavaAvailable = null;
+var decompileResultCache = /* @__PURE__ */ new Map();
+var MAX_DECOMPILE_CACHE_ITEMS = 500;
+function computeBufferHash(buf) {
+  if (!buf || buf.length === 0) return "empty";
+  const len = buf.length;
+  const b0 = buf[0] || 0;
+  const b1 = buf[Math.min(10, len - 1)] || 0;
+  const b2 = buf[Math.min(100, len - 1)] || 0;
+  const b3 = buf[Math.max(0, len - 1)] || 0;
+  return `${len}_${b0}_${b1}_${b2}_${b3}`;
+}
 function tryDecompileWithCfr(buffer) {
   try {
     if (typeof process === "undefined" || !process.versions?.node) {
@@ -192,34 +205,40 @@ function tryDecompileWithCfr(buffer) {
     if (!execFileSync || !fs2 || !path2 || !os2) {
       return null;
     }
-    const possibleCfrPaths = [
-      path2.resolve(process.cwd(), "bin", "cfr.jar"),
-      path2.resolve(process.cwd(), "cfr.jar")
-    ];
-    if (typeof __dirname !== "undefined") {
-      possibleCfrPaths.push(
-        path2.resolve(__dirname, "..", "..", "..", "bin", "cfr.jar"),
-        path2.resolve(__dirname, "..", "bin", "cfr.jar"),
-        path2.resolve(__dirname, "bin", "cfr.jar"),
-        path2.resolve(__dirname, "cfr.jar")
-      );
-    }
-    let cfrJarPath = "";
-    for (const p of possibleCfrPaths) {
-      if (fs2.existsSync(p)) {
-        cfrJarPath = p;
-        break;
+    if (cachedCfrJarPath === void 0) {
+      const possibleCfrPaths = [
+        path2.resolve(process.cwd(), "bin", "cfr.jar"),
+        path2.resolve(process.cwd(), "cfr.jar")
+      ];
+      if (typeof __dirname !== "undefined") {
+        possibleCfrPaths.push(
+          path2.resolve(__dirname, "..", "..", "..", "bin", "cfr.jar"),
+          path2.resolve(__dirname, "..", "bin", "cfr.jar"),
+          path2.resolve(__dirname, "bin", "cfr.jar"),
+          path2.resolve(__dirname, "cfr.jar")
+        );
+      }
+      cachedCfrJarPath = null;
+      for (const p of possibleCfrPaths) {
+        if (fs2.existsSync(p)) {
+          cachedCfrJarPath = p;
+          break;
+        }
       }
     }
-    if (!cfrJarPath) return null;
-    try {
-      execFileSync("java", ["-version"], {
-        stdio: "ignore",
-        windowsHide: true
-      });
-    } catch {
-      return null;
+    if (!cachedCfrJarPath) return null;
+    if (cachedJavaAvailable === null) {
+      try {
+        execFileSync("java", ["-version"], {
+          stdio: "ignore",
+          windowsHide: true
+        });
+        cachedJavaAvailable = true;
+      } catch {
+        cachedJavaAvailable = false;
+      }
     }
+    if (!cachedJavaAvailable) return null;
     const tmpDir = fs2.mkdtempSync(path2.join(os2.tmpdir(), "cfr-decompile-"));
     const tmpClassFile = path2.join(tmpDir, "TargetClass.class");
     try {
@@ -228,7 +247,7 @@ function tryDecompileWithCfr(buffer) {
         "java",
         [
           "-jar",
-          cfrJarPath,
+          cachedCfrJarPath,
           tmpClassFile,
           "--comments",
           "false",
@@ -273,11 +292,21 @@ function decompileJavaClass(buffer, classNameFallback = "DecompiledClass") {
     return `// Not a valid Java class file (missing CAFEBABE magic header)
 `;
   }
-  const cfrResult = tryDecompileWithCfr(buffer);
-  if (cfrResult) {
-    return cfrResult;
+  const hashKey = computeBufferHash(buffer);
+  if (decompileResultCache.has(hashKey)) {
+    return decompileResultCache.get(hashKey);
   }
-  return decompileWithTypeScriptEngine(buffer, classNameFallback);
+  const cfrResult = tryDecompileWithCfr(buffer);
+  let finalResult = cfrResult;
+  if (!finalResult) {
+    finalResult = decompileWithTypeScriptEngine(buffer, classNameFallback);
+  }
+  if (decompileResultCache.size >= MAX_DECOMPILE_CACHE_ITEMS) {
+    const firstKey = decompileResultCache.keys().next().value;
+    if (firstKey) decompileResultCache.delete(firstKey);
+  }
+  decompileResultCache.set(hashKey, finalResult);
+  return finalResult;
 }
 function decompileWithTypeScriptEngine(buffer, classNameFallback = "DecompiledClass") {
   try {
@@ -1216,7 +1245,8 @@ async function verifyOwnerCredentials(tokenOrKey) {
         Authorization: `token ${clean}`,
         Accept: "application/vnd.github.v3+json",
         "User-Agent": "GitIngest-OwnerAuth"
-      }
+      },
+      signal: AbortSignal.timeout(3e3)
     });
     if (!ghRes.ok && ghRes.status === 401) {
       ghRes = await fetch("https://api.github.com/user", {
@@ -1224,7 +1254,8 @@ async function verifyOwnerCredentials(tokenOrKey) {
           Authorization: `Bearer ${clean}`,
           Accept: "application/vnd.github.v3+json",
           "User-Agent": "GitIngest-OwnerAuth"
-        }
+        },
+        signal: AbortSignal.timeout(3e3)
       });
     }
     if (ghRes.status === 429 || ghRes.status === 403 && ghRes.headers.get("x-ratelimit-remaining") === "0") {
@@ -1366,6 +1397,31 @@ app.post("/api/ingest", async (req, res) => {
   const authHeader = req.headers.authorization;
   const bearerToken = authHeader && authHeader.startsWith("Bearer ") ? authHeader.substring(7).trim() : null;
   const incomingToken = bearerToken || req.body.token || process.env.GITHUB_TOKEN;
+  const isNdjson = Boolean(req.headers.accept?.includes("application/x-ndjson"));
+  if (isNdjson) {
+    res.setHeader("Content-Type", "application/x-ndjson");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+  }
+  const sendProgress = (filePath, count, total, status) => {
+    if (isNdjson && !res.writableEnded) {
+      try {
+        const cleanPath = filePath.replace(/\s*\[Decompiled Java\]$/i, "");
+        res.write(JSON.stringify({ type: "progress", path: cleanPath, count, total, status }) + "\n");
+      } catch {
+      }
+    }
+  };
+  const sendResult = (data) => {
+    if (isNdjson) {
+      if (!res.writableEnded) {
+        res.write(JSON.stringify({ type: "result", data }) + "\n");
+        res.end();
+      }
+    } else {
+      res.json(data);
+    }
+  };
   const { input_text, max_file_size = 50, pattern_type = "exclude", pattern = "", token, decompile_classes = false } = req.body;
   if (!input_text || typeof input_text !== "string") {
     return res.status(400).json({ error: "Please provide a valid repository URL or path" });
@@ -1655,6 +1711,14 @@ File: ${item.relPath}
 ${item.content}
 `
               );
+              const isClass = item.relPath.includes("[Decompiled Java]");
+              const isBin = item.content.startsWith("[Binary file");
+              sendProgress(
+                item.relPath,
+                fileContents.length,
+                fileEntries.length,
+                isClass ? "decompiling" : isBin ? "binary" : "completed"
+              );
               if (totalChars >= MAX_ZIP_DIGEST_CHARS) {
                 isZipTruncated = true;
                 break;
@@ -1677,7 +1741,7 @@ ${item.content}
           `Total characters: ${totalChars.toLocaleString()}`,
           isZipTruncated ? `(Digest capped at 40MB for browser rendering stability)` : null
         ].filter(Boolean);
-        return res.json({
+        return sendResult({
           summary: summaryParts.join("\n"),
           tree: `Directory structure:
 ${treeText}`,
@@ -1892,6 +1956,14 @@ File: ${resItem.relPath}
 ${resItem.content}
 `
           );
+          const isClass = resItem.relPath.includes("[Decompiled Java]");
+          const isBin = resItem.content.startsWith("[Binary file");
+          sendProgress(
+            resItem.relPath,
+            fileContents.length,
+            collectedFiles.length,
+            isClass ? "decompiling" : isBin ? "binary" : "completed"
+          );
           if (totalChars >= MAX_DIGEST_CHARS) {
             isTruncated = true;
             break;
@@ -1916,7 +1988,7 @@ ${resItem.content}
       isTruncated ? `(Digest capped at 40MB for browser rendering stability)` : null
     ].filter(Boolean);
     const summary = summaryParts.join("\n");
-    return res.json({
+    return sendResult({
       summary,
       tree: `Directory structure:
 ${treeText}`,

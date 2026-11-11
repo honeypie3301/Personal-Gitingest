@@ -62,7 +62,7 @@ export default async function handler(req: any, res: any) {
 
   try {
     // 1. Resolve branch
-    let branch: string = parsed.branch || '';
+    let branch: string = parsed!.branch || '';
     if (!branch) {
       const repoRes = await fetch(`https://api.github.com/repos/${owner}/${repo}`, { headers, signal: controller.signal });
       const rateLimit = await githubRateLimitMessage(repoRes);
@@ -97,7 +97,7 @@ export default async function handler(req: any, res: any) {
       const archive = path.join(directory, 'repository.zip');
       await downloadArchive(`https://api.github.com/repos/${owner}/${repo}/zipball/${encodeURIComponent(branch)}`, activeToken, archive, controller.signal);
       const result = await ingestArchive(archive, path.join(directory, 'content.txt'), path.join(directory, 'digest.txt'), {
-        owner, repo, branch, subpath: parsed.subpath, max_file_size, pattern_type, pattern,
+        owner, repo, branch, subpath: parsed!.subpath, max_file_size, pattern_type, pattern,
         decompile_classes,
         preview_chars: Number.MAX_SAFE_INTEGER,
         signal: controller.signal,

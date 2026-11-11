@@ -260,7 +260,7 @@ export const ResultSection: React.FC<ResultSectionProps> = React.memo(({
             onClick={handleDownload}
             disabled={isSplittingDownload}
             className="h-full py-2.5 px-3 bg-[#21262d] hover:bg-[#30363d] disabled:opacity-50 border-2 border-[#30363d] text-white font-bold rounded-xl text-xs sm:text-sm transition-transform active:translate-y-0.5 shadow-[2px_2px_0_0_#000000] flex items-center justify-center gap-1.5 cursor-pointer"
-            title={splitInfo?.isSplit ? `Download ${splitInfo.totalParts} split text files in .zip package` : "Download full digest as .txt file"}
+            title={splitInfo?.isSplit ? `Download ${splitInfo.estimatedParts} split text files in .zip package` : "Download full digest as .txt file"}
           >
             {splitInfo?.isSplit ? <FileArchive className="w-4 h-4 text-amber-400" /> : <Download className="w-4 h-4" />}
             <span className="hidden sm:inline">

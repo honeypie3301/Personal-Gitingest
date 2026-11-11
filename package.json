@@ -23,9 +23,9 @@
     "stats": "stats.bat"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.1161.0",
-    "@aws-sdk/lib-storage": "^3.1161.0",
-    "@aws-sdk/s3-request-presigner": "^3.1161.0",
+    "@aws-sdk/client-s3": "^3.1166.0",
+    "@aws-sdk/lib-storage": "^3.1166.0",
+    "@aws-sdk/s3-request-presigner": "^3.1166.0",
     "@google/genai": "^2.4.0",
     "@tailwindcss/vite": "^4.3.3",
     "@vitejs/plugin-react": "^6.1.1",

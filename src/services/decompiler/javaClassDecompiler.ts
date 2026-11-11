@@ -132,6 +132,23 @@ export function isJavaClassBuffer(buf: Uint8Array | any): boolean {
   return buf[0] === 0xca && buf[1] === 0xfe && buf[2] === 0xba && buf[3] === 0xbe;
 }
 
+// High-performance caching for decompiler lookups
+let cachedCfrJarPath: string | null | undefined = undefined;
+let cachedJavaAvailable: boolean | null = null;
+const decompileResultCache = new Map<string, string>();
+const MAX_DECOMPILE_CACHE_ITEMS = 500;
+
+function computeBufferHash(buf: Uint8Array): string {
+  if (!buf || buf.length === 0) return 'empty';
+  const len = buf.length;
+  // Sample length + head + tail + middle bytes for fast O(1) hash signature
+  const b0 = buf[0] || 0;
+  const b1 = buf[Math.min(10, len - 1)] || 0;
+  const b2 = buf[Math.min(100, len - 1)] || 0;
+  const b3 = buf[Math.max(0, len - 1)] || 0;
+  return `${len}_${b0}_${b1}_${b2}_${b3}`;
+}
+
 /**
  * Attempt CFR decompiler execution synchronously in Node.js environment.
  */
@@ -195,40 +212,47 @@ function tryDecompileWithCfr(buffer: Uint8Array | any): string | null {
       return null;
     }
 
-    // Locate CFR jar in potential locations
-    const possibleCfrPaths = [
-      path.resolve(process.cwd(), 'bin', 'cfr.jar'),
-      path.resolve(process.cwd(), 'cfr.jar'),
-    ];
+    // Locate CFR jar (use cached path if already resolved)
+    if (cachedCfrJarPath === undefined) {
+      const possibleCfrPaths = [
+        path.resolve(process.cwd(), 'bin', 'cfr.jar'),
+        path.resolve(process.cwd(), 'cfr.jar'),
+      ];
 
-    if (typeof __dirname !== 'undefined') {
-      possibleCfrPaths.push(
-        path.resolve(__dirname, '..', '..', '..', 'bin', 'cfr.jar'),
-        path.resolve(__dirname, '..', 'bin', 'cfr.jar'),
-        path.resolve(__dirname, 'bin', 'cfr.jar'),
-        path.resolve(__dirname, 'cfr.jar')
-      );
-    }
+      if (typeof __dirname !== 'undefined') {
+        possibleCfrPaths.push(
+          path.resolve(__dirname, '..', '..', '..', 'bin', 'cfr.jar'),
+          path.resolve(__dirname, '..', 'bin', 'cfr.jar'),
+          path.resolve(__dirname, 'bin', 'cfr.jar'),
+          path.resolve(__dirname, 'cfr.jar')
+        );
+      }
 
-    let cfrJarPath = '';
-    for (const p of possibleCfrPaths) {
-      if (fs.existsSync(p)) {
-        cfrJarPath = p;
-        break;
+      cachedCfrJarPath = null;
+      for (const p of possibleCfrPaths) {
+        if (fs.existsSync(p)) {
+          cachedCfrJarPath = p;
+          break;
+        }
       }
     }
 
-    if (!cfrJarPath) return null;
+    if (!cachedCfrJarPath) return null;
 
-    // Check if java executable is runnable silently without console flash
-    try {
-      execFileSync('java', ['-version'], {
-        stdio: 'ignore',
-        windowsHide: true,
-      });
-    } catch {
-      return null;
+    // Check if java executable is runnable (cached to avoid repeated process spawns)
+    if (cachedJavaAvailable === null) {
+      try {
+        execFileSync('java', ['-version'], {
+          stdio: 'ignore',
+          windowsHide: true,
+        });
+        cachedJavaAvailable = true;
+      } catch {
+        cachedJavaAvailable = false;
+      }
     }
+
+    if (!cachedJavaAvailable) return null;
 
     // Write temp class file
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cfr-decompile-'));
@@ -239,7 +263,7 @@ function tryDecompileWithCfr(buffer: Uint8Array | any): string | null {
       const output = execFileSync(
         'java',
         [
-          '-jar', cfrJarPath, tmpClassFile,
+          '-jar', cachedCfrJarPath, tmpClassFile,
           '--comments', 'false',
           '--showversion', 'false',
           '--silent', 'true',
@@ -281,14 +305,28 @@ export function decompileJavaClass(buffer: Uint8Array | any, classNameFallback =
     return `// Not a valid Java class file (missing CAFEBABE magic header)\n`;
   }
 
-  // 1. Try CFR decompiler (100% genuine Java source code)
-  const cfrResult = tryDecompileWithCfr(buffer);
-  if (cfrResult) {
-    return cfrResult;
+  // Fast cache check by buffer signature
+  const hashKey = computeBufferHash(buffer);
+  if (decompileResultCache.has(hashKey)) {
+    return decompileResultCache.get(hashKey)!;
   }
 
+  // 1. Try CFR decompiler (100% genuine Java source code)
+  const cfrResult = tryDecompileWithCfr(buffer);
+  let finalResult = cfrResult;
+
   // 2. TypeScript Full Decompiler & Bytecode Disassembler fallback
-  return decompileWithTypeScriptEngine(buffer, classNameFallback);
+  if (!finalResult) {
+    finalResult = decompileWithTypeScriptEngine(buffer, classNameFallback);
+  }
+
+  if (decompileResultCache.size >= MAX_DECOMPILE_CACHE_ITEMS) {
+    const firstKey = decompileResultCache.keys().next().value;
+    if (firstKey) decompileResultCache.delete(firstKey);
+  }
+  decompileResultCache.set(hashKey, finalResult);
+
+  return finalResult;
 }
 
 // -------------------------------------------------------------------------------------------------

@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ArrowRight, ShieldCheck, Key, RefreshCw, ChevronDown, Lock, FolderGit2, XCircle, Check, Clock, X, Star } from 'lucide-react';
-import { IngestRequest, PatternType, TokenStatus } from '../types';
+import { ArrowRight, ShieldCheck, Key, RefreshCw, ChevronDown, Lock, FolderGit2, XCircle, Check, Clock, X, Star, Activity, ListFilter } from 'lucide-react';
+import { IngestRequest, PatternType, TokenStatus, IngestFileEvent } from '../types';
 import { getSavedPatterns, savePatterns, getSavedToken, getSavedDecompileClasses, saveDecompileClasses, getSavedMaxOutputSize, saveMaxOutputSize } from '../services/ingest';
 import { fetchUserRepos, RepoSummary } from '../services/githubApi';
 import { IngestionTimer } from './IngestionTimer';
+import { LiveIngestionView } from './LiveIngestionView';
 import {
   getRecentIngests,
   addRecentIngest,
@@ -30,6 +31,8 @@ interface GitFormProps {
   onCancel?: () => void;
   initialUrl?: string;
   onUrlChange?: (url: string) => void;
+  liveEvents?: IngestFileEvent[];
+  onClearLiveEvents?: () => void;
 }
 
 type SizeUnit = 'KB' | 'MB' | 'GB';
@@ -43,12 +46,22 @@ export const GitForm: React.FC<GitFormProps> = React.memo(({
   onCancel,
   initialUrl = '',
   onUrlChange,
+  liveEvents = [],
+  onClearLiveEvents,
 }) => {
   const [url, setUrl] = useState(initialUrl);
+  const [showLiveView, setShowLiveView] = useState(false);
 
   useEffect(() => {
     setUrl(initialUrl);
   }, [initialUrl]);
+
+  // Auto-open live view when ingestion starts
+  useEffect(() => {
+    if (isLoading) {
+      setShowLiveView(true);
+    }
+  }, [isLoading]);
   const [patternType, setPatternType] = useState<PatternType>('exclude');
   const [pattern, setPattern] = useState('');
   const [maxFileSize, setMaxFileSize] = useState(50); // In MB
@@ -364,14 +377,31 @@ export const GitForm: React.FC<GitFormProps> = React.memo(({
                     {onCancel && (
                       <button
                         type="button"
-                        onClick={onCancel}
-                        className="px-4 py-2.5 sm:py-3.5 rounded border-[3px] border-red-600 font-extrabold text-sm sm:text-base bg-red-600 hover:bg-red-500 text-white flex items-center justify-center gap-1.5 cursor-pointer shadow-[2px_2px_0_0_#000000] active:translate-y-0.5 transition-transform"
+                        onClick={() => {
+                          setShowLiveView(false);
+                          onClearLiveEvents?.();
+                          onCancel();
+                        }}
+                        className="px-3 sm:px-4 py-2.5 sm:py-3.5 rounded border-[3px] border-red-600 font-extrabold text-xs sm:text-base bg-red-600 hover:bg-red-500 text-white flex items-center justify-center gap-1.5 cursor-pointer shadow-[2px_2px_0_0_#000000] active:translate-y-0.5 transition-transform"
                         title="Cancel current ingestion"
                       >
                         <XCircle className="w-4 h-4" />
                         <span>Cancel</span>
                       </button>
                     )}
+                    <button
+                      type="button"
+                      onClick={() => setShowLiveView((prev) => !prev)}
+                      className={`px-3 sm:px-4 py-2.5 sm:py-3.5 rounded border-[3px] font-extrabold text-xs sm:text-base flex items-center justify-center gap-1.5 cursor-pointer shadow-[2px_2px_0_0_#000000] active:translate-y-0.5 transition-all ${
+                        showLiveView
+                          ? 'border-amber-500 bg-amber-500/20 text-amber-300'
+                          : 'border-[#30363d] bg-[#21262d] hover:bg-[#30363d] text-gray-200'
+                      }`}
+                      title="Toggle real-time moving list view of files being ingested"
+                    >
+                      <Activity className="w-4 h-4 text-amber-400 shrink-0" />
+                      <span>{showLiveView ? 'Hide Live View' : 'Files View'}</span>
+                    </button>
                   </div>
                 ) : (
                   <button
@@ -425,20 +455,21 @@ export const GitForm: React.FC<GitFormProps> = React.memo(({
                 </span>
 
                 {recentIngests.slice(0, 8).map((item) => (
-                  <div key={item.id} className="inline-flex items-center group shrink-0">
+                  <div key={item.id} className="inline-flex items-stretch group shrink-0 h-6 sm:h-7 rounded border border-[#30363d] bg-[#1c2128] overflow-hidden hover:border-amber-500/60 transition-colors shadow-[1px_1px_0_0_#000000]">
                     <button
                       type="button"
                       onClick={() => handleRecentClick(item.url)}
-                      className="text-[11px] sm:text-xs font-semibold px-2 py-1 bg-[#1c2128] hover:bg-[#2d333b] text-gray-300 hover:text-white rounded-l border border-r-0 border-[#30363d] hover:border-amber-500/60 transition-colors flex items-center gap-1 cursor-pointer"
+                      className="px-2 font-semibold text-[11px] sm:text-xs text-gray-300 hover:text-white flex items-center gap-1 cursor-pointer hover:bg-[#2d333b] transition-colors"
                       title={`${item.url} (${formatTimeAgo(item.timestamp)})`}
                     >
                       <span className="truncate max-w-[130px] sm:max-w-[180px]">{item.repoName}</span>
                       <span className="text-[10px] text-gray-400 font-mono">({formatTimeAgo(item.timestamp)})</span>
                     </button>
+                    <div className="w-[1px] bg-[#30363d] self-stretch"></div>
                     <button
                       type="button"
                       onClick={(e) => handleRemoveRecent(item.url, e)}
-                      className="px-1.5 py-1 bg-[#1c2128] hover:bg-red-950/80 text-gray-400 hover:text-red-400 rounded-r border border-l-0 border-[#30363d] hover:border-red-600/80 transition-colors cursor-pointer"
+                      className="px-1.5 hover:bg-red-950/80 text-gray-400 hover:text-red-400 transition-colors cursor-pointer flex items-center justify-center self-stretch"
                       title="Remove from history"
                     >
                       <X className="w-3 h-3" />
@@ -640,123 +671,129 @@ export const GitForm: React.FC<GitFormProps> = React.memo(({
               </div>
 
               {/* Max File Size Slider + Input + Unit Selector */}
-              <div className="md:col-span-5 flex items-center justify-between gap-2 bg-[#0d1117] p-2 sm:p-2.5 rounded border-[3px] border-[#30363d] shadow-[2px_2px_0_0_#000000]">
-                <span className="text-[10px] sm:text-xs font-extrabold text-gray-300 uppercase tracking-wider whitespace-nowrap shrink-0" title="Maximum individual file size to include in the ingestion">
-                  Max Size:
-                </span>
-                <input
-                  type="range"
-                  min={sliderMin}
-                  max={sliderMax}
-                  step={sliderStep}
-                  value={Math.min(sliderMax, Math.max(sliderMin, currentValNum))}
-                  onChange={(e) => handleSliderChange(Number(e.target.value))}
-                  className="w-full min-w-[50px] accent-amber-500 cursor-pointer"
-                />
-                <div className="flex items-center gap-1 shrink-0">
+              <div className="md:col-span-5 relative">
+                <div className="w-full h-full rounded bg-black translate-y-1 translate-x-1 absolute inset-0"></div>
+                <div className="relative z-10 flex items-center justify-between gap-2 bg-[#0d1117] p-2 sm:p-2.5 rounded border-[3px] border-[#30363d]">
+                  <span className="text-[10px] sm:text-xs font-extrabold text-amber-400 uppercase tracking-wider whitespace-nowrap shrink-0" title="Maximum individual file size to include in the ingestion">
+                    MAX SIZE:
+                  </span>
                   <input
-                    type="number"
-                    min="0.01"
-                    step="any"
-                    value={displaySize}
-                    onChange={(e) => handleSizeInputChange(e.target.value)}
-                    className="w-14 sm:w-16 px-1.5 py-0.5 bg-[#161b22] border border-[#30363d] focus:border-amber-400 rounded text-center font-mono font-bold text-xs sm:text-sm text-amber-300 focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none transition-colors"
-                    title="Enter custom file size"
+                    type="range"
+                    min={sliderMin}
+                    max={sliderMax}
+                    step={sliderStep}
+                    value={Math.min(sliderMax, Math.max(sliderMin, currentValNum))}
+                    onChange={(e) => handleSliderChange(Number(e.target.value))}
+                    className="w-full min-w-[50px] accent-amber-500 cursor-pointer"
                   />
-                  <div className="relative" ref={unitDropdownRef}>
-                    <button
-                      type="button"
-                      onClick={() => setIsUnitDropdownOpen((prev) => !prev)}
-                      className="bg-[#1e242c] hover:bg-[#252d37] font-extrabold text-[10px] sm:text-xs uppercase px-1.5 py-1 border border-amber-500/50 rounded text-amber-300 flex items-center gap-0.5 focus:outline-none cursor-pointer transition-colors shadow-[1px_1px_0_0_#000000]"
-                      title="Switch unit: KB, MB, GB"
-                    >
-                      <span>{sizeUnit}</span>
-                      <ChevronDown className={`w-3 h-3 transition-transform ${isUnitDropdownOpen ? 'rotate-180' : ''}`} />
-                    </button>
-                    {isUnitDropdownOpen && (
-                      <div className="absolute right-0 top-full mt-1.5 w-16 bg-[#161b22] border-2 border-amber-500/80 rounded-lg shadow-[3px_3px_0_0_#000000] py-1 z-50 overflow-hidden">
-                        {(['KB', 'MB', 'GB'] as const).map((unit) => (
-                          <button
-                            key={unit}
-                            type="button"
-                            onClick={() => handleUnitChange(unit)}
-                            className={`w-full text-left px-2 py-1 text-xs font-bold uppercase transition-colors ${
-                              sizeUnit === unit
-                                ? 'bg-amber-500/20 text-amber-300'
-                                : 'text-gray-300 hover:bg-[#21262d] hover:text-white'
-                            }`}
-                          >
-                            {unit}
-                          </button>
-                        ))}
-                      </div>
-                    )}
+                  <div className="flex items-center gap-1 shrink-0">
+                    <input
+                      type="number"
+                      min="0.01"
+                      step="any"
+                      value={displaySize}
+                      onChange={(e) => handleSizeInputChange(e.target.value)}
+                      className="w-14 sm:w-16 px-1.5 py-0.5 bg-[#161b22] border-2 border-[#30363d] focus:border-amber-400 rounded-lg text-center font-mono font-bold text-xs sm:text-sm text-amber-300 focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none transition-colors"
+                      title="Enter custom file size"
+                    />
+                    <div className="relative" ref={unitDropdownRef}>
+                      <button
+                        type="button"
+                        onClick={() => setIsUnitDropdownOpen((prev) => !prev)}
+                        className="bg-[#1e242c] hover:bg-[#252d37] font-extrabold text-[10px] sm:text-xs uppercase px-2 py-1 border-2 border-[#30363d] hover:border-amber-500/60 rounded-lg text-amber-400 flex items-center gap-0.5 focus:outline-none cursor-pointer transition-colors shadow-[1px_1px_0_0_#000000]"
+                        title="Switch unit: KB, MB, GB"
+                      >
+                        <span>{sizeUnit}</span>
+                        <ChevronDown className={`w-3 h-3 transition-transform ${isUnitDropdownOpen ? 'rotate-180' : ''}`} />
+                      </button>
+                      {isUnitDropdownOpen && (
+                        <div className="absolute right-0 top-full mt-1.5 w-16 bg-[#161b22] border-2 border-amber-500/80 rounded-lg shadow-[3px_3px_0_0_#000000] py-1 z-50 overflow-hidden">
+                          {(['KB', 'MB', 'GB'] as const).map((unit) => (
+                            <button
+                              key={unit}
+                              type="button"
+                              onClick={() => handleUnitChange(unit)}
+                              className={`w-full text-left px-2 py-1 text-xs font-bold uppercase transition-colors ${
+                                sizeUnit === unit
+                                  ? 'bg-amber-500/20 text-amber-300'
+                                  : 'text-gray-300 hover:bg-[#21262d] hover:text-white'
+                              }`}
+                            >
+                              {unit}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
               </div>
             </div>
 
             {/* Second Slider Row: Max Output Text File Size (Split threshold up to 1GB) */}
-            <div className="pt-2.5 pb-1 border-t border-[#30363d]/60 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2.5 bg-[#0d1117]/60 p-2 sm:p-2.5 rounded-lg border border-[#30363d]">
-              <div className="flex items-center gap-2 min-w-0">
-                <span className="text-[10px] sm:text-xs font-extrabold text-amber-400 uppercase tracking-wider whitespace-nowrap shrink-0">
-                  Max Output File Size:
-                </span>
-                <span className="hidden sm:inline text-[11px] text-gray-400">
-                  (Split text file if output exceeds this limit, max 1 GB)
-                </span>
-              </div>
+            <div className="relative">
+              <div className="w-full h-full rounded bg-black translate-y-1 translate-x-1 absolute inset-0"></div>
+              <div className="relative z-10 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2.5 bg-[#0d1117] p-2 sm:p-2.5 rounded border-[3px] border-[#30363d]">
+                <div className="flex items-center gap-2 min-w-0 shrink-0">
+                  <span className="text-[10px] sm:text-xs font-extrabold text-amber-400 uppercase tracking-wider whitespace-nowrap shrink-0">
+                    MAX OUTPUT FILE SIZE:
+                  </span>
+                  <span className="hidden sm:inline text-[11px] text-gray-400 font-medium">
+                    (Split text file if output exceeds this limit, max 1 GB)
+                  </span>
+                </div>
 
-              <div className="flex items-center gap-2.5 w-full sm:w-1/2 md:w-2/5 shrink-0 justify-end">
-                <input
-                  type="range"
-                  min={outputSliderMin}
-                  max={outputSliderMax}
-                  step={outputSliderStep}
-                  value={Math.min(outputSliderMax, Math.max(outputSliderMin, currentOutputValNum))}
-                  onChange={(e) => handleOutputSliderChange(Number(e.target.value))}
-                  className="w-full accent-amber-500 cursor-pointer"
-                  title="Configure max text file size (splits safely into multiple parts if exceeded, max 1 GB)"
-                />
-                <div className="flex items-center gap-1 shrink-0">
+                <div className="flex items-center gap-2.5 w-full sm:w-1/2 md:w-2/5 shrink-0 justify-end">
                   <input
-                    type="number"
+                    type="range"
                     min={outputSliderMin}
                     max={outputSliderMax}
-                    step="any"
-                    value={displayOutputSize}
-                    onChange={(e) => handleOutputSizeInputChange(e.target.value)}
-                    className="w-14 sm:w-16 px-1.5 py-0.5 bg-[#161b22] border border-[#30363d] focus:border-amber-400 rounded text-center font-mono font-bold text-xs sm:text-sm text-amber-300 focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none transition-colors"
-                    title="Enter custom output file limit (up to 1 GB)"
+                    step={outputSliderStep}
+                    value={Math.min(outputSliderMax, Math.max(outputSliderMin, currentOutputValNum))}
+                    onChange={(e) => handleOutputSliderChange(Number(e.target.value))}
+                    className="w-full min-w-[50px] accent-amber-500 cursor-pointer"
+                    title="Configure max text file size (splits safely into multiple parts if exceeded, max 1 GB)"
                   />
-                  <div className="relative" ref={outputUnitDropdownRef}>
-                    <button
-                      type="button"
-                      onClick={() => setIsOutputUnitDropdownOpen((prev) => !prev)}
-                      className="bg-[#1e242c] hover:bg-[#252d37] font-extrabold text-[10px] sm:text-xs uppercase px-1.5 py-1 border border-amber-500/50 rounded text-amber-300 flex items-center gap-0.5 focus:outline-none cursor-pointer transition-colors shadow-[1px_1px_0_0_#000000]"
-                      title="Switch unit: KB, MB, GB (max 1 GB)"
-                    >
-                      <span>{outputUnit}</span>
-                      <ChevronDown className={`w-3 h-3 transition-transform ${isOutputUnitDropdownOpen ? 'rotate-180' : ''}`} />
-                    </button>
-                    {isOutputUnitDropdownOpen && (
-                      <div className="absolute right-0 top-full mt-1.5 w-16 bg-[#161b22] border-2 border-amber-500/80 rounded-lg shadow-[3px_3px_0_0_#000000] py-1 z-50 overflow-hidden">
-                        {(['KB', 'MB', 'GB'] as const).map((unit) => (
-                          <button
-                            key={unit}
-                            type="button"
-                            onClick={() => handleOutputUnitChange(unit)}
-                            className={`w-full text-left px-2 py-1 text-xs font-bold uppercase transition-colors ${
-                              outputUnit === unit
-                                ? 'bg-amber-500/20 text-amber-300'
-                                : 'text-gray-300 hover:bg-[#21262d] hover:text-white'
-                            }`}
-                          >
-                            {unit}
-                          </button>
-                        ))}
-                      </div>
-                    )}
+                  <div className="flex items-center gap-1 shrink-0">
+                    <input
+                      type="number"
+                      min={outputSliderMin}
+                      max={outputSliderMax}
+                      step="any"
+                      value={displayOutputSize}
+                      onChange={(e) => handleOutputSizeInputChange(e.target.value)}
+                      className="w-14 sm:w-16 px-1.5 py-0.5 bg-[#161b22] border-2 border-[#30363d] focus:border-amber-400 rounded-lg text-center font-mono font-bold text-xs sm:text-sm text-amber-300 focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none transition-colors"
+                      title="Enter custom output file limit (up to 1 GB)"
+                    />
+                    <div className="relative" ref={outputUnitDropdownRef}>
+                      <button
+                        type="button"
+                        onClick={() => setIsOutputUnitDropdownOpen((prev) => !prev)}
+                        className="bg-[#1e242c] hover:bg-[#252d37] font-extrabold text-[10px] sm:text-xs uppercase px-2 py-1 border-2 border-[#30363d] hover:border-amber-500/60 rounded-lg text-amber-400 flex items-center gap-0.5 focus:outline-none cursor-pointer transition-colors shadow-[1px_1px_0_0_#000000]"
+                        title="Switch unit: KB, MB, GB (max 1 GB)"
+                      >
+                        <span>{outputUnit}</span>
+                        <ChevronDown className={`w-3 h-3 transition-transform ${isOutputUnitDropdownOpen ? 'rotate-180' : ''}`} />
+                      </button>
+                      {isOutputUnitDropdownOpen && (
+                        <div className="absolute right-0 top-full mt-1.5 w-16 bg-[#161b22] border-2 border-amber-500/80 rounded-lg shadow-[3px_3px_0_0_#000000] py-1 z-50 overflow-hidden">
+                          {(['KB', 'MB', 'GB'] as const).map((unit) => (
+                            <button
+                              key={unit}
+                              type="button"
+                              onClick={() => handleOutputUnitChange(unit)}
+                              className={`w-full text-left px-2 py-1 text-xs font-bold uppercase transition-colors ${
+                                outputUnit === unit
+                                  ? 'bg-amber-500/20 text-amber-300'
+                                  : 'text-gray-300 hover:bg-[#21262d] hover:text-white'
+                              }`}
+                            >
+                              {unit}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
               </div>
@@ -826,6 +863,15 @@ export const GitForm: React.FC<GitFormProps> = React.memo(({
               </div>
             </div>
           </form>
+
+          {showLiveView && (
+            <LiveIngestionView
+              events={liveEvents}
+              isLoading={isLoading}
+              onClose={() => setShowLiveView(false)}
+              onClear={onClearLiveEvents}
+            />
+          )}
         </div>
       </div>
     </div>

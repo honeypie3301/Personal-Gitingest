@@ -171,6 +171,8 @@ export async function ingestViaGitHubApi(
     headers.Authorization = `Bearer ${validToken}`;
   }
 
+  req.onProgress?.({ path: `Connecting to ${owner}/${repo}...`, count: 0, status: 'ingesting' });
+
   let branch: string = parsed.branch || '';
 
   if (!branch) {
@@ -204,6 +206,8 @@ export async function ingestViaGitHubApi(
     const repoData = await repoRes.json();
     branch = repoData.default_branch || 'main';
   }
+
+  req.onProgress?.({ path: `Fetching repository file tree for branch "${branch}"...`, count: 0, status: 'ingesting' });
 
   const maxBytes = (req.max_file_size || 50) * 1024 * 1024;
   const patternType = req.pattern_type || 'exclude';
@@ -352,12 +356,27 @@ export async function ingestViaGitHubApi(
   // Sliding window: a slow request never stalls the other workers (unlike Promise.all per chunk).
   const results = new Array<{ path: string; text: string } | null>(fileNodes.length).fill(null);
   let next = 0;
+  let processedCount = 0;
+  const totalCount = fileNodes.length;
+
   await Promise.all(
     Array.from({ length: Math.min(CONCURRENCY, fileNodes.length) }, async () => {
       while (next < fileNodes.length) {
         if (signal?.aborted) throw new DOMException('Ingestion cancelled by user', 'AbortError');
         const index = next++;
-        results[index] = await fetchSingleFileContent(fileNodes[index]);
+        const node = fileNodes[index];
+        const res = await fetchSingleFileContent(node);
+        results[index] = res;
+
+        processedCount++;
+        const isClass = node.path.toLowerCase().endsWith('.class');
+        const status = isClass ? 'decompiling' : isBinaryPath(node.path) ? 'binary' : 'completed';
+        req.onProgress?.({
+          path: node.path,
+          status,
+          count: processedCount,
+          total: totalCount,
+        });
       }
     })
   );

@@ -130,6 +130,7 @@ async function verifyOwnerCredentials(tokenOrKey?: string): Promise<{ authorized
         Accept: 'application/vnd.github.v3+json',
         'User-Agent': 'GitIngest-OwnerAuth',
       },
+      signal: AbortSignal.timeout(3000),
     });
 
     if (!ghRes.ok && ghRes.status === 401) {
@@ -139,6 +140,7 @@ async function verifyOwnerCredentials(tokenOrKey?: string): Promise<{ authorized
           Accept: 'application/vnd.github.v3+json',
           'User-Agent': 'GitIngest-OwnerAuth',
         },
+        signal: AbortSignal.timeout(3000),
       });
     }
 
@@ -306,6 +308,33 @@ app.post('/api/ingest', async (req, res) => {
 
   // In public mode, all users can ingest repositories without owner PIN/key
 
+
+  const isNdjson = Boolean(req.headers.accept?.includes('application/x-ndjson'));
+  if (isNdjson) {
+    res.setHeader('Content-Type', 'application/x-ndjson');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+  }
+
+  const sendProgress = (filePath: string, count: number, total?: number, status?: string) => {
+    if (isNdjson && !res.writableEnded) {
+      try {
+        const cleanPath = filePath.replace(/\s*\[Decompiled Java\]$/i, '');
+        res.write(JSON.stringify({ type: 'progress', path: cleanPath, count, total, status }) + '\n');
+      } catch {}
+    }
+  };
+
+  const sendResult = (data: any) => {
+    if (isNdjson) {
+      if (!res.writableEnded) {
+        res.write(JSON.stringify({ type: 'result', data }) + '\n');
+        res.end();
+      }
+    } else {
+      res.json(data);
+    }
+  };
 
   const { input_text, max_file_size = 50, pattern_type = 'exclude', pattern = '', token, decompile_classes = false } = req.body;
 
@@ -493,6 +522,7 @@ app.post('/api/ingest', async (req, res) => {
 
   // FAST PATH: In-memory Zipball extraction (0 disk I/O, matching & beating real GitIngest)
   try {
+    sendProgress(`Connecting to ${owner}/${repo}...`, 0, undefined, 'ingesting');
     let resolvedBranch: string = branch || '';
     let zipRes: Response | undefined;
 
@@ -500,6 +530,8 @@ app.post('/api/ingest', async (req, res) => {
       'User-Agent': 'GitIngest-Fast',
     };
     if (activeToken) zipHeaders.Authorization = `Bearer ${activeToken}`;
+
+    sendProgress(`Downloading zipball archive for ${owner}/${repo}...`, 0, undefined, 'ingesting');
 
     if (resolvedBranch) {
       zipRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/zipball/${encodeURIComponent(resolvedBranch)}`, {
@@ -553,6 +585,7 @@ app.post('/api/ingest', async (req, res) => {
     }
 
     if (zipRes && zipRes.ok) {
+      sendProgress(`Archive downloaded. Extracting and analyzing repository...`, 0, undefined, 'ingesting');
       const arrayBuf = await zipRes.arrayBuffer();
       // Cap raised from 100MB to 300MB
       if (arrayBuf.byteLength > 0 && arrayBuf.byteLength < 300 * 1024 * 1024) {
@@ -585,7 +618,7 @@ app.post('/api/ingest', async (req, res) => {
         const MAX_ZIP_DIGEST_CHARS = 40 * 1024 * 1024; // 40MB limit
         let isZipTruncated = false;
 
-        const ZIP_CHUNK = 100;
+        const ZIP_CHUNK = 2; // Micro-chunking for instant live streaming
         for (let i = 0; i < fileEntries.length; i += ZIP_CHUNK) {
           if (clientDisconnected) return;
           if (totalChars >= MAX_ZIP_DIGEST_CHARS) {
@@ -628,6 +661,14 @@ app.post('/api/ingest', async (req, res) => {
               fileContents.push(
                 `================================================\nFile: ${item.relPath}\n================================================\n${item.content}\n`
               );
+              const isClass = item.relPath.includes('[Decompiled Java]');
+              const isBin = item.content.startsWith('[Binary file');
+              sendProgress(
+                item.relPath,
+                fileContents.length,
+                fileEntries.length,
+                isClass ? 'decompiling' : isBin ? 'binary' : 'completed'
+              );
               if (totalChars >= MAX_ZIP_DIGEST_CHARS) {
                 isZipTruncated = true;
                 break;
@@ -651,7 +692,7 @@ app.post('/api/ingest', async (req, res) => {
           isZipTruncated ? `(Digest capped at 40MB for browser rendering stability)` : null,
         ].filter(Boolean);
 
-        return res.json({
+        return sendResult({
           summary: summaryParts.join('\n'),
           tree: `Directory structure:\n${treeText}`,
           content: fileContents.join('\n'),
@@ -829,8 +870,8 @@ app.post('/api/ingest', async (req, res) => {
     const paths = collectedFiles.map((f) => f.relPath);
     const treeText = buildAsciiTree(subpath || repo, paths);
 
-    // 3. Optimization: Memory-safe chunked reading avoiding V8 string heap stalls
-    const CHUNK_SIZE = 100;
+    // 3. Optimization: Memory-safe micro-chunked reading for instant live streaming
+    const CHUNK_SIZE = 2;
     const fileContents: string[] = [];
     let totalChars = 0;
     const MAX_DIGEST_CHARS = 40 * 1024 * 1024; // 40MB text limit to prevent browser tab & Node.js OOM
@@ -879,6 +920,14 @@ app.post('/api/ingest', async (req, res) => {
           fileContents.push(
             `================================================\nFile: ${resItem.relPath}\n================================================\n${resItem.content}\n`
           );
+          const isClass = resItem.relPath.includes('[Decompiled Java]');
+          const isBin = resItem.content.startsWith('[Binary file');
+          sendProgress(
+            resItem.relPath,
+            fileContents.length,
+            collectedFiles.length,
+            isClass ? 'decompiling' : isBin ? 'binary' : 'completed'
+          );
           if (totalChars >= MAX_DIGEST_CHARS) {
             isTruncated = true;
             break;
@@ -906,7 +955,7 @@ app.post('/api/ingest', async (req, res) => {
 
     const summary = summaryParts.join('\n');
 
-    return res.json({
+    return sendResult({
       summary,
       tree: `Directory structure:\n${treeText}`,
       content: fullContent,

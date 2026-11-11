@@ -17,9 +17,10 @@ import {
   getCachedAuth,
   setCachedAuth,
   clearAuthCache,
+  getCachedTokenStatus,
 } from './services/ingest';
 import { fetchUserRepos, RepoSummary } from './services/githubApi';
-import { IngestRequest, IngestResponse, TokenStatus } from './types';
+import { IngestRequest, IngestResponse, TokenStatus, IngestFileEvent } from './types';
 import { Lock, ShieldCheck, Key, RefreshCw } from 'lucide-react';
 import { notifier } from './services/notifications';
 import { addRecentIngest } from './services/ingestionHistory';
@@ -75,12 +76,10 @@ function deriveTabTitle(url: string, result: IngestResponse | null): string {
 export default function App() {
   const [sessions, setSessions] = useState<WorkflowSession[]>([createEmptySession('session_1')]);
   const [activeSessionId, setActiveSessionId] = useState<string>('session_1');
+  const [liveEventsMap, setLiveEventsMap] = useState<Record<string, IngestFileEvent[]>>({});
 
   const [isTokenModalOpen, setIsTokenModalOpen] = useState(false);
-  const [tokenStatus, setTokenStatus] = useState<TokenStatus>({
-    configured: false,
-    source: 'none',
-  });
+  const [tokenStatus, setTokenStatus] = useState<TokenStatus>(() => getCachedTokenStatus());
 
   const [userRepos, setUserRepos] = useState<RepoSummary[]>([]);
   const [isLoadingRepos, setIsLoadingRepos] = useState(false);
@@ -262,8 +261,21 @@ export default function App() {
       )
     );
 
+    // Reset live events for this session
+    setLiveEventsMap((prev) => ({ ...prev, [sessionId]: [] }));
+
+    const onProgress = (event: IngestFileEvent) => {
+      setLiveEventsMap((prev) => {
+        const current = prev[sessionId] || [];
+        return {
+          ...prev,
+          [sessionId]: [...current, event],
+        };
+      });
+    };
+
     try {
-      const data = await performIngest(req, abortController.signal);
+      const data = await performIngest({ ...req, onProgress }, abortController.signal);
       if (data.mode_switched) {
         try { localStorage.setItem('gitingest_fallback_active', 'true'); } catch {}
       }
@@ -444,6 +456,8 @@ export default function App() {
               tokenStatus={tokenStatus}
               onOpenTokenModal={() => setIsTokenModalOpen(true)}
               onCancel={() => handleCancelSession(activeSession.id)}
+              liveEvents={liveEventsMap[activeSession.id] || []}
+              onClearLiveEvents={() => setLiveEventsMap((prev) => ({ ...prev, [activeSession.id]: [] }))}
             />
 
             {/* Result Area */}

@@ -20,6 +20,27 @@ interface AuthCache {
   ts: number;
 }
 
+const STATUS_CACHE_KEY = 'gitingest_status_cache';
+
+export function getCachedTokenStatus(): TokenStatus {
+  try {
+    const raw = localStorage.getItem(STATUS_CACHE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed.configured === 'boolean') {
+        return parsed;
+      }
+    }
+  } catch {}
+  return { configured: false, source: 'none' };
+}
+
+export function setCachedTokenStatus(status: TokenStatus): void {
+  try {
+    localStorage.setItem(STATUS_CACHE_KEY, JSON.stringify(status));
+  } catch {}
+}
+
 export function getCachedAuth(token: string): GitHubUser | null {
   try {
     const raw = localStorage.getItem(AUTH_CACHE_KEY);
@@ -41,7 +62,10 @@ export function setCachedAuth(token: string, user: GitHubUser): void {
 }
 
 export function clearAuthCache(): void {
-  try { localStorage.removeItem(AUTH_CACHE_KEY); } catch {}
+  try {
+    localStorage.removeItem(AUTH_CACHE_KEY);
+    localStorage.removeItem(STATUS_CACHE_KEY);
+  } catch {}
 }
 
 export function getSavedDecompileClasses(): boolean {
@@ -285,11 +309,13 @@ export async function checkServerTokenStatus(): Promise<TokenStatus> {
     if (res.ok) {
       const data = await readApiResponse(res, 'Unable to check token status');
       if (data.configured && data.authorized) {
-        return {
+        const status: TokenStatus = {
           configured: true,
           source: saved ? 'saved_pat' : 'server_env',
           user: data.user,
         };
+        setCachedTokenStatus(status);
+        return status;
       }
     }
   } catch {
@@ -297,17 +323,21 @@ export async function checkServerTokenStatus(): Promise<TokenStatus> {
   }
 
   if (saved) {
-    return {
+    const status: TokenStatus = {
       configured: true,
       source: 'saved_pat',
       user: null,
     };
+    setCachedTokenStatus(status);
+    return status;
   }
 
-  return {
+  const status: TokenStatus = {
     configured: false,
     source: 'none',
   };
+  setCachedTokenStatus(status);
+  return status;
 }
 
 /**
@@ -335,13 +365,62 @@ export async function performIngest(request: IngestRequest, signal?: AbortSignal
   try {
     const response = await fetch('/api/ingest', {
       method: 'POST',
-      headers,
+      headers: {
+        ...headers,
+        Accept: 'application/x-ndjson, application/json',
+      },
       body: JSON.stringify(payload),
       signal,
     });
-    backendResponded = response.headers.get('content-type')?.includes('application/json') || false;
+    const contentType = response.headers.get('content-type') || '';
+    backendResponded = contentType.includes('application/json') || contentType.includes('application/x-ndjson');
 
     if (response.ok) {
+      if (contentType.includes('application/x-ndjson') && response.body) {
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let finalResult: IngestResponse | null = null;
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            try {
+              const parsed = JSON.parse(line.trim());
+              if (parsed.type === 'progress') {
+                request.onProgress?.({
+                  path: parsed.path,
+                  status: parsed.status || 'completed',
+                  count: parsed.count,
+                  total: parsed.total,
+                });
+              } else if (parsed.type === 'result' && parsed.data) {
+                finalResult = parsed.data;
+              }
+            } catch {}
+          }
+        }
+
+        if (buffer.trim()) {
+          try {
+            const parsed = JSON.parse(buffer.trim());
+            if (parsed.type === 'result' && parsed.data) {
+              finalResult = parsed.data;
+            }
+          } catch {}
+        }
+
+        if (finalResult && 'tree' in finalResult && typeof finalResult.tree === 'string') {
+          return finalResult;
+        }
+      }
+
       const data = await readApiResponse<IngestResponse | WorkerJob>(response, 'Unable to ingest repository');
       if ('id' in data && data.id && data.state) {
         workerStarted = true;
