@@ -309,7 +309,13 @@ app.post('/api/ingest', async (req, res) => {
   // In public mode, all users can ingest repositories without owner PIN/key
 
 
-  const isNdjson = Boolean(req.headers.accept?.includes('application/x-ndjson'));
+  const acceptHeader = (req.headers.accept || '').toLowerCase();
+  const isNdjson = !req.headers['x-no-stream'] && (
+    !acceptHeader ||
+    acceptHeader.includes('application/x-ndjson') ||
+    acceptHeader.includes('*/*') ||
+    acceptHeader.includes('text/event-stream')
+  );
   if (isNdjson) {
     res.setHeader('Content-Type', 'application/x-ndjson');
     res.setHeader('Cache-Control', 'no-cache, no-transform');
