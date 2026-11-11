@@ -488,9 +488,9 @@ export const GitForm: React.FC<GitFormProps> = React.memo(({
             )}
 
             {/* Controls Row: Pattern filter & Max Size Slider (up to 500 MB) */}
-            <div className="pt-3 border-t-2 border-[#30363d] grid grid-cols-1 md:grid-cols-12 gap-3 sm:gap-4 items-center">
+            <div className="pt-3 border-t-2 border-[#30363d] grid grid-cols-1 md:grid-cols-12 gap-3 sm:gap-4 items-center relative z-40">
               {/* Pattern Type & Pattern Input */}
-              <div className="md:col-span-7 relative">
+              <div className="md:col-span-7 relative z-40">
                 <div className="w-full h-full rounded bg-black translate-y-1 translate-x-1 absolute inset-0"></div>
                 <div className="relative z-10 flex border-[3px] border-[#30363d] rounded bg-[#0d1117] focus-within:border-amber-400 transition-colors">
                   

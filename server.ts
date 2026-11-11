@@ -314,7 +314,11 @@ app.post('/api/ingest', async (req, res) => {
     res.setHeader('Content-Type', 'application/x-ndjson');
     res.setHeader('Cache-Control', 'no-cache, no-transform');
     res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Accel-Buffering', 'no');
     res.setHeader('Connection', 'keep-alive');
+    if (res.socket) {
+      res.socket.setNoDelay(true);
+    }
     res.flushHeaders?.();
   }
 
