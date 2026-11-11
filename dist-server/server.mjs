@@ -1398,7 +1398,7 @@ app.post("/api/ingest", async (req, res) => {
   const bearerToken = authHeader && authHeader.startsWith("Bearer ") ? authHeader.substring(7).trim() : null;
   const incomingToken = bearerToken || req.body.token || process.env.GITHUB_TOKEN;
   const acceptHeader = (req.headers.accept || "").toLowerCase();
-  const isNdjson = !req.headers["x-no-stream"] && (!acceptHeader || acceptHeader.includes("application/x-ndjson") || acceptHeader.includes("*/*") || acceptHeader.includes("text/event-stream"));
+  const isNdjson = !process.env.INGEST_WORKER_URL && !req.headers["x-no-stream"] && (!acceptHeader || acceptHeader.includes("application/x-ndjson") || acceptHeader.includes("*/*") || acceptHeader.includes("text/event-stream"));
   if (isNdjson) {
     res.setHeader("Content-Type", "application/x-ndjson");
     res.setHeader("Transfer-Encoding", "chunked");
@@ -2098,7 +2098,9 @@ async function startServer() {
   } catch {
   }
   const distPath = path.join(process.cwd(), "dist");
-  const isExplicitDev = process.env.NODE_ENV === "development";
+  const entryPath = process.argv[1] ? path.resolve(process.argv[1]) : "";
+  const isSourceServer = /\.[cm]?tsx?$/i.test(entryPath);
+  const isExplicitDev = process.env.NODE_ENV === "development" || isSourceServer;
   const hasDist = fs.existsSync(path.join(distPath, "index.html"));
   if (!isExplicitDev && hasDist) {
     app.use(express.static(distPath, { maxAge: "1d" }));
