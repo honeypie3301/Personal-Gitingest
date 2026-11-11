@@ -14,6 +14,9 @@ import {
   verifyAuthWithServer,
   OWNER_GITHUB_LOGIN,
   OWNER_GITHUB_ID,
+  getCachedAuth,
+  setCachedAuth,
+  clearAuthCache,
 } from './services/ingest';
 import { fetchUserRepos, RepoSummary } from './services/githubApi';
 import { IngestRequest, IngestResponse, TokenStatus } from './types';
@@ -92,14 +95,25 @@ export default function App() {
   const refreshTokens = async () => {
     const savedPat = getSavedToken();
     if (savedPat) {
+      // 1. Apply cached auth instantly so UI is ready immediately
+      const cached = getCachedAuth(savedPat);
+      if (cached) {
+        setTokenStatus({ configured: true, source: 'saved_pat', user: cached });
+        loadRepos(savedPat, cached.login);
+        // Re-verify silently in background — don't await
+        verifyAuthWithServer(savedPat).then((authRes) => {
+          if (authRes.success && authRes.user) setCachedAuth(savedPat, authRes.user);
+          else clearAuthCache();
+        }).catch(() => {});
+        return;
+      }
+
+      // 2. No cache — verify now (first load or cache expired)
       try {
         const authRes = await verifyAuthWithServer(savedPat);
         if (authRes.success && authRes.user) {
-          setTokenStatus({
-            configured: true,
-            source: 'saved_pat',
-            user: authRes.user,
-          });
+          setCachedAuth(savedPat, authRes.user);
+          setTokenStatus({ configured: true, source: 'saved_pat', user: authRes.user });
           loadRepos(savedPat, authRes.user.login);
           return;
         }
@@ -150,6 +164,7 @@ export default function App() {
       }
 
       setSavedToken(input);
+      if (authRes.user) setCachedAuth(input, authRes.user);
       setIsLocked(false);
       setAuthError(null);
       setAuthInput('');
@@ -168,6 +183,7 @@ export default function App() {
 
   const handleManualLock = () => {
     setSavedToken('');
+    clearAuthCache();
     setTokenStatus({ configured: false, source: 'none', user: null });
     setIsLocked(true);
   };

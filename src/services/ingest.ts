@@ -11,6 +11,38 @@ const MAX_FILE_SIZE_KEY = 'gitingest_max_file_size';
 const MAX_OUTPUT_SIZE_KEY = 'gitingest_max_output_size';
 const DECOMPILE_CLASSES_KEY = 'gitingest_decompile_classes';
 const OWNER_PIN_KEY = 'gitingest_owner_pin';
+const AUTH_CACHE_KEY = 'gitingest_auth_cache';
+const AUTH_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
+interface AuthCache {
+  user: GitHubUser;
+  token: string;
+  ts: number;
+}
+
+export function getCachedAuth(token: string): GitHubUser | null {
+  try {
+    const raw = localStorage.getItem(AUTH_CACHE_KEY);
+    if (!raw) return null;
+    const cache: AuthCache = JSON.parse(raw);
+    if (cache.token !== token) return null;
+    if (Date.now() - cache.ts > AUTH_CACHE_TTL_MS) return null;
+    return cache.user;
+  } catch {
+    return null;
+  }
+}
+
+export function setCachedAuth(token: string, user: GitHubUser): void {
+  try {
+    const cache: AuthCache = { token, user, ts: Date.now() };
+    localStorage.setItem(AUTH_CACHE_KEY, JSON.stringify(cache));
+  } catch {}
+}
+
+export function clearAuthCache(): void {
+  try { localStorage.removeItem(AUTH_CACHE_KEY); } catch {}
+}
 
 export function getSavedDecompileClasses(): boolean {
   try {
