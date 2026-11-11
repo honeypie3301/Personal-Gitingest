@@ -70,7 +70,7 @@ export const Navbar: React.FC<NavbarProps> = ({
 
           {/* GitHub Repo Link */}
           <a
-            href={import.meta.env.VITE_GITHUB_REPO_URL || "https://github.com/honeypie3301"}
+            href="https://github.com/honeypie3301/Personal-Gitingest"
             target="_blank"
             rel="noreferrer"
             className="hidden sm:flex items-center gap-1.5 px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-lg border-2 border-[#30363d] text-xs font-bold bg-[#21262d] text-gray-200 hover:bg-[#30363d] hover:text-white transition-colors shadow-[2px_2px_0_0_#000000]"
