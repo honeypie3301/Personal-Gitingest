@@ -1415,10 +1415,10 @@ app.post("/api/ingest", async (req, res) => {
     if (isNdjson && !res.writableEnded) {
       try {
         const cleanPath = filePath.replace(/\s*\[Decompiled Java\]$/i, "");
-        res.write(JSON.stringify({ type: "progress", path: cleanPath, count, total, status }) + "\n");
-        if (typeof res.flush === "function") {
-          res.flush();
-        }
+        const jsonLine = JSON.stringify({ type: "progress", path: cleanPath, count, total, status }) + "\n";
+        res.cork();
+        res.write(jsonLine);
+        res.uncork();
       } catch {
       }
     }
