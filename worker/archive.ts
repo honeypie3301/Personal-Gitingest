@@ -188,7 +188,7 @@ export async function ingestArchive(archive: string, contentFile: string, digest
         if (name.toLowerCase().endsWith('.class')) {
           if (options.decompile_classes) {
             const buf = await readEntryBuffer(zip, entry, options.signal);
-            content = decompileJavaClass(buf, path.basename(name, '.class'));
+            content = await decompileJavaClass(buf, path.basename(name, '.class'));
             displayName += ' [Decompiled Java]';
           } else {
             content = '[Binary file: Java Class file]';
@@ -356,7 +356,7 @@ export async function ingestDirectory(dir: string, contentFile: string, digestFi
         if (name.toLowerCase().endsWith('.class')) {
           if (options.decompile_classes) {
             const buf = await readFile(file);
-            content = decompileJavaClass(buf, path.basename(name, '.class'));
+            content = await decompileJavaClass(buf, path.basename(name, '.class'));
             displayName += ' [Decompiled Java]';
           } else {
             content = '[Binary file: Java Class file]';

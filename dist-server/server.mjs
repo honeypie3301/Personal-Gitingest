@@ -145,9 +145,13 @@ function isJavaClassBuffer(buf) {
   return buf[0] === 202 && buf[1] === 254 && buf[2] === 186 && buf[3] === 190;
 }
 var cachedCfrJarPath = void 0;
-var cachedJavaAvailable = null;
+var cachedJavaAvailability = null;
 var decompileResultCache = /* @__PURE__ */ new Map();
+var inFlightDecompiles = /* @__PURE__ */ new Map();
 var MAX_DECOMPILE_CACHE_ITEMS = 500;
+var MAX_CFR_PROCESSES = 2;
+var activeCfrProcesses = 0;
+var cfrProcessQueue = [];
 function computeBufferHash(buf) {
   if (!buf || buf.length === 0) return "empty";
   const len = buf.length;
@@ -157,12 +161,32 @@ function computeBufferHash(buf) {
   const b3 = buf[Math.max(0, len - 1)] || 0;
   return `${len}_${b0}_${b1}_${b2}_${b3}`;
 }
-function tryDecompileWithCfr(buffer) {
+function acquireCfrProcessSlot() {
+  if (activeCfrProcesses < MAX_CFR_PROCESSES) {
+    activeCfrProcesses++;
+    return Promise.resolve(releaseCfrProcessSlot);
+  }
+  return new Promise((resolve) => cfrProcessQueue.push(() => resolve(releaseCfrProcessSlot)));
+}
+function releaseCfrProcessSlot() {
+  const next = cfrProcessQueue.shift();
+  if (next) next();
+  else activeCfrProcesses--;
+}
+function execFileAsync(execFile2, file, args, options) {
+  return new Promise((resolve, reject) => {
+    execFile2(file, args, options, (error, stdout) => {
+      if (error) reject(error);
+      else resolve(typeof stdout === "string" ? stdout : stdout.toString("utf-8"));
+    });
+  });
+}
+async function tryDecompileWithCfr(buffer) {
   try {
     if (typeof process === "undefined" || !process.versions?.node) {
       return null;
     }
-    let execFileSync;
+    let execFile2;
     let fs2;
     let path2;
     let os2;
@@ -170,31 +194,31 @@ function tryDecompileWithCfr(buffer) {
     if (globalReq) {
       try {
         const cp = globalReq("child_process");
-        execFileSync = cp.execFileSync;
+        execFile2 = cp.execFile;
         fs2 = globalReq("fs");
         path2 = globalReq("path");
         os2 = globalReq("os");
       } catch {
       }
     }
-    if (!execFileSync && typeof process.getBuiltinModule === "function") {
+    if (!execFile2 && typeof process.getBuiltinModule === "function") {
       try {
         const cp = process.getBuiltinModule("child_process");
-        execFileSync = cp.execFileSync;
+        execFile2 = cp.execFile;
         fs2 = process.getBuiltinModule("fs");
         path2 = process.getBuiltinModule("path");
         os2 = process.getBuiltinModule("os");
       } catch {
       }
     }
-    if (!execFileSync) {
+    if (!execFile2) {
       try {
         const mod = globalThis.module;
         const createRequire = mod?.createRequire || process.getBuiltinModule?.("module")?.createRequire;
         if (createRequire) {
           const req = createRequire((process.cwd?.() || "") + "/");
           const cp = req("child_process");
-          execFileSync = cp.execFileSync;
+          execFile2 = cp.execFile;
           fs2 = req("fs");
           path2 = req("path");
           os2 = req("os");
@@ -202,7 +226,7 @@ function tryDecompileWithCfr(buffer) {
       } catch {
       }
     }
-    if (!execFileSync || !fs2 || !path2 || !os2) {
+    if (!execFile2 || !fs2 || !path2 || !os2) {
       return null;
     }
     if (cachedCfrJarPath === void 0) {
@@ -227,23 +251,23 @@ function tryDecompileWithCfr(buffer) {
       }
     }
     if (!cachedCfrJarPath) return null;
-    if (cachedJavaAvailable === null) {
-      try {
-        execFileSync("java", ["-version"], {
-          stdio: "ignore",
-          windowsHide: true
-        });
-        cachedJavaAvailable = true;
-      } catch {
-        cachedJavaAvailable = false;
-      }
+    if (!cachedJavaAvailability) {
+      cachedJavaAvailability = execFileAsync(execFile2, "java", ["-version"], {
+        windowsHide: true,
+        stdio: "ignore",
+        timeout: 5e3,
+        encoding: "utf-8"
+      }).then(() => true, () => false);
     }
-    if (!cachedJavaAvailable) return null;
-    const tmpDir = fs2.mkdtempSync(path2.join(os2.tmpdir(), "cfr-decompile-"));
-    const tmpClassFile = path2.join(tmpDir, "TargetClass.class");
+    if (!await cachedJavaAvailability) return null;
+    const releaseSlot = await acquireCfrProcessSlot();
+    let tmpDir = null;
     try {
+      tmpDir = fs2.mkdtempSync(path2.join(os2.tmpdir(), "cfr-decompile-"));
+      const tmpClassFile = path2.join(tmpDir, "TargetClass.class");
       fs2.writeFileSync(tmpClassFile, Buffer.from(buffer));
-      const output = execFileSync(
+      const output = await execFileAsync(
+        execFile2,
         "java",
         [
           "-jar",
@@ -278,35 +302,51 @@ function tryDecompileWithCfr(buffer) {
         return output.trim();
       }
     } finally {
-      try {
-        fs2.rmSync(tmpDir, { recursive: true, force: true });
-      } catch {
+      if (tmpDir) {
+        try {
+          fs2.rmSync(tmpDir, { recursive: true, force: true });
+        } catch {
+        }
       }
+      releaseSlot();
     }
   } catch {
   }
   return null;
 }
-function decompileJavaClass(buffer, classNameFallback = "DecompiledClass") {
+async function decompileJavaClass(buffer, classNameFallback = "DecompiledClass", options = {}) {
   if (!isJavaClassBuffer(buffer)) {
     return `// Not a valid Java class file (missing CAFEBABE magic header)
 `;
   }
-  const hashKey = computeBufferHash(buffer);
-  if (decompileResultCache.has(hashKey)) {
-    return decompileResultCache.get(hashKey);
+  const engine = options.engine || "auto";
+  const cacheEnabled = options.cache !== false;
+  const hashKey = `${engine}:${classNameFallback}:${computeBufferHash(buffer)}`;
+  if (cacheEnabled) {
+    const cached = decompileResultCache.get(hashKey);
+    if (cached !== void 0) return cached;
+    const pending = inFlightDecompiles.get(hashKey);
+    if (pending) return pending;
   }
-  const cfrResult = tryDecompileWithCfr(buffer);
-  let finalResult = cfrResult;
-  if (!finalResult) {
-    finalResult = decompileWithTypeScriptEngine(buffer, classNameFallback);
+  const work = (async () => {
+    const cfrResult = engine === "typescript" ? null : await tryDecompileWithCfr(buffer);
+    const finalResult = cfrResult || decompileWithTypeScriptEngine(buffer, classNameFallback);
+    if (cacheEnabled) {
+      if (decompileResultCache.size >= MAX_DECOMPILE_CACHE_ITEMS) {
+        const firstKey = decompileResultCache.keys().next().value;
+        if (firstKey) decompileResultCache.delete(firstKey);
+      }
+      decompileResultCache.set(hashKey, finalResult);
+    }
+    return finalResult;
+  })();
+  if (!cacheEnabled) return work;
+  inFlightDecompiles.set(hashKey, work);
+  try {
+    return await work;
+  } finally {
+    inFlightDecompiles.delete(hashKey);
   }
-  if (decompileResultCache.size >= MAX_DECOMPILE_CACHE_ITEMS) {
-    const firstKey = decompileResultCache.keys().next().value;
-    if (firstKey) decompileResultCache.delete(firstKey);
-  }
-  decompileResultCache.set(hashKey, finalResult);
-  return finalResult;
 }
 function decompileWithTypeScriptEngine(buffer, classNameFallback = "DecompiledClass") {
   try {
@@ -1168,7 +1208,7 @@ function formatJavaSource(info) {
 import { createServer as createViteServer } from "vite";
 dotenv.config();
 var rawExecFileAsync = promisify(execFile);
-var execFileAsync = async (file, args, options = {}) => {
+var execFileAsync2 = async (file, args, options = {}) => {
   const result = await rawExecFileAsync(file, args, {
     windowsHide: true,
     encoding: "utf8",
@@ -1508,7 +1548,7 @@ app.post("/api/ingest", async (req, res) => {
             let fileHeader = file.relPath;
             if (file.relPath.toLowerCase().endsWith(".class")) {
               if (decompile_classes) {
-                content = decompileJavaClass(buf, path.basename(file.relPath, ".class"));
+                content = await decompileJavaClass(buf, path.basename(file.relPath, ".class"));
                 fileHeader += " [Decompiled Java]";
               } else {
                 content = "[Binary file: Java Class file]";
@@ -1687,7 +1727,7 @@ ${treeText}`,
         let totalChars = 0;
         const MAX_ZIP_DIGEST_CHARS = 40 * 1024 * 1024;
         let isZipTruncated = false;
-        const ZIP_CHUNK = 2;
+        const ZIP_CHUNK = 8;
         for (let i = 0; i < fileEntries.length; i += ZIP_CHUNK) {
           if (clientDisconnected) return;
           if (totalChars >= MAX_ZIP_DIGEST_CHARS) {
@@ -1703,7 +1743,7 @@ ${treeText}`,
                 if (relPath.toLowerCase().endsWith(".class")) {
                   const buf = await obj.async("nodebuffer");
                   if (decompile_classes) {
-                    content = decompileJavaClass(buf, path.basename(relPath, ".class"));
+                    content = await decompileJavaClass(buf, path.basename(relPath, ".class"));
                     fileHeader += " [Decompiled Java]";
                   } else {
                     content = "[Binary file: Java Class file]";
@@ -1784,7 +1824,7 @@ ${treeText}`,
     let effectiveToken = activeToken;
     if (!effectiveToken) {
       try {
-        const { stdout: ghToken } = await execFileAsync("gh", ["auth", "token"], { timeout: 3e3 });
+        const { stdout: ghToken } = await execFileAsync2("gh", ["auth", "token"], { timeout: 3e3 });
         if (ghToken && ghToken.trim()) {
           effectiveToken = ghToken.trim();
         }
@@ -1811,13 +1851,13 @@ ${treeText}`,
     }
     cloneArgs.push(cloneUrl, tempDir);
     try {
-      await execFileAsync("git", cloneArgs, { timeout: 3e5 });
+      await execFileAsync2("git", cloneArgs, { timeout: 3e5 });
     } catch (gitErr) {
       let ghCloneSucceeded = false;
       try {
         const ghCloneArgs = ["repo", "clone", `${owner}/${repo}`, tempDir, "--", "--depth", "1", "--single-branch", "--no-tags"];
         if (branch) ghCloneArgs.push("-b", branch);
-        await execFileAsync("gh", ghCloneArgs, { timeout: 3e5 });
+        await execFileAsync2("gh", ghCloneArgs, { timeout: 3e5 });
         ghCloneSucceeded = true;
       } catch {
       }
@@ -1841,16 +1881,16 @@ ${treeText}`,
         ];
         if (branch) fallbackArgs.push("-b", branch);
         fallbackArgs.push(cloneUrl, tempDir);
-        await execFileAsync("git", fallbackArgs, { timeout: 3e5 });
+        await execFileAsync2("git", fallbackArgs, { timeout: 3e5 });
       }
     }
     if (subpath) {
       try {
-        await execFileAsync("git", ["-C", tempDir, "sparse-checkout", "set", subpath], { timeout: 3e4 });
-        await execFileAsync("git", ["-C", tempDir, "checkout"], { timeout: 6e4 });
+        await execFileAsync2("git", ["-C", tempDir, "sparse-checkout", "set", subpath], { timeout: 3e4 });
+        await execFileAsync2("git", ["-C", tempDir, "checkout"], { timeout: 6e4 });
       } catch {
         try {
-          await execFileAsync("git", ["-C", tempDir, "checkout"], { timeout: 6e4 });
+          await execFileAsync2("git", ["-C", tempDir, "checkout"], { timeout: 6e4 });
         } catch {
         }
       }
@@ -1884,7 +1924,7 @@ ${treeText}`,
     ]);
     let usedGitLs = false;
     try {
-      const { stdout: lsOut } = await execFileAsync("git", ["-C", targetRoot, "ls-files", "-z"], { timeout: 15e3 });
+      const { stdout: lsOut } = await execFileAsync2("git", ["-C", targetRoot, "ls-files", "-z"], { timeout: 15e3 });
       const rawPaths = lsOut.split("\0").filter(Boolean);
       for (const rel of rawPaths) {
         if (!isPathAllowed(rel)) continue;
@@ -1948,7 +1988,7 @@ ${treeText}`,
             let fileHeader = file.relPath;
             if (file.relPath.toLowerCase().endsWith(".class")) {
               if (decompile_classes) {
-                content = decompileJavaClass(buf, path.basename(file.relPath, ".class"));
+                content = await decompileJavaClass(buf, path.basename(file.relPath, ".class"));
                 fileHeader += " [Decompiled Java]";
               } else {
                 content = "[Binary file: Java Class file]";

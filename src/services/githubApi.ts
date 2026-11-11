@@ -304,7 +304,7 @@ export async function ingestViaGitHubApi(
             for (let j = 0; j < binary.length; j++) bytes[j] = binary.charCodeAt(j);
 
             if (isClass) {
-              const decompiled = decompileJavaClass(bytes, file.path.split('/').pop()?.replace(/\.class$/i, '') || 'Class');
+              const decompiled = await decompileJavaClass(bytes, file.path.split('/').pop()?.replace(/\.class$/i, '') || 'Class');
               return { path: file.path + ' [Decompiled Java]', text: decompiled };
             }
             const text = new TextDecoder('utf-8').decode(bytes);

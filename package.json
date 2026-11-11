@@ -16,6 +16,7 @@
     "worker": "tsx worker/server.ts",
     "test:ingest": "tsx --test tests/performance/*.test.ts",
     "benchmark:ingest": "tsx tests/performance/benchmark.ts",
+    "benchmark:decompiler": "tsx tests/performance/decompilerBenchmark.ts",
     "setup:autostart": "node scripts/setup-autostart.js",
     "stop:background": "node scripts/stop-background.js",
     "auto": "node scripts/setup-autostart.js",

@@ -134,9 +134,18 @@ export function isJavaClassBuffer(buf: Uint8Array | any): boolean {
 
 // High-performance caching for decompiler lookups
 let cachedCfrJarPath: string | null | undefined = undefined;
-let cachedJavaAvailable: boolean | null = null;
+let cachedJavaAvailability: Promise<boolean> | null = null;
 const decompileResultCache = new Map<string, string>();
+const inFlightDecompiles = new Map<string, Promise<string>>();
 const MAX_DECOMPILE_CACHE_ITEMS = 500;
+const MAX_CFR_PROCESSES = 2;
+let activeCfrProcesses = 0;
+const cfrProcessQueue: Array<() => void> = [];
+
+export interface DecompileOptions {
+  engine?: 'auto' | 'typescript';
+  cache?: boolean;
+}
 
 function computeBufferHash(buf: Uint8Array): string {
   if (!buf || buf.length === 0) return 'empty';
@@ -149,17 +158,40 @@ function computeBufferHash(buf: Uint8Array): string {
   return `${len}_${b0}_${b1}_${b2}_${b3}`;
 }
 
+function acquireCfrProcessSlot(): Promise<() => void> {
+  if (activeCfrProcesses < MAX_CFR_PROCESSES) {
+    activeCfrProcesses++;
+    return Promise.resolve(releaseCfrProcessSlot);
+  }
+  return new Promise(resolve => cfrProcessQueue.push(() => resolve(releaseCfrProcessSlot)));
+}
+
+function releaseCfrProcessSlot(): void {
+  const next = cfrProcessQueue.shift();
+  if (next) next();
+  else activeCfrProcesses--;
+}
+
+function execFileAsync(execFile: any, file: string, args: string[], options: any): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(file, args, options, (error: Error | null, stdout: string | Buffer) => {
+      if (error) reject(error);
+      else resolve(typeof stdout === 'string' ? stdout : stdout.toString('utf-8'));
+    });
+  });
+}
+
 /**
- * Attempt CFR decompiler execution synchronously in Node.js environment.
+ * Run CFR asynchronously so ingestion batches can use bounded parallelism.
  */
-function tryDecompileWithCfr(buffer: Uint8Array | any): string | null {
+async function tryDecompileWithCfr(buffer: Uint8Array | any): Promise<string | null> {
   try {
     // Only attempt in Node.js environments
     if (typeof process === 'undefined' || !process.versions?.node) {
       return null;
     }
 
-    let execFileSync: any;
+    let execFile: any;
     let fs: any;
     let path: any;
     let os: any;
@@ -174,7 +206,7 @@ function tryDecompileWithCfr(buffer: Uint8Array | any): string | null {
     if (globalReq) {
       try {
         const cp = globalReq('child_process');
-        execFileSync = cp.execFileSync;
+        execFile = cp.execFile;
         fs = globalReq('fs');
         path = globalReq('path');
         os = globalReq('os');
@@ -182,10 +214,10 @@ function tryDecompileWithCfr(buffer: Uint8Array | any): string | null {
     }
 
     // 2. Try Node's internal binding / process.getBuiltinModule (Node 22+)
-    if (!execFileSync && typeof (process as any).getBuiltinModule === 'function') {
+    if (!execFile && typeof (process as any).getBuiltinModule === 'function') {
       try {
         const cp = (process as any).getBuiltinModule('child_process');
-        execFileSync = cp.execFileSync;
+        execFile = cp.execFile;
         fs = (process as any).getBuiltinModule('fs');
         path = (process as any).getBuiltinModule('path');
         os = (process as any).getBuiltinModule('os');
@@ -193,14 +225,14 @@ function tryDecompileWithCfr(buffer: Uint8Array | any): string | null {
     }
 
     // 3. Try module.createRequire
-    if (!execFileSync) {
+    if (!execFile) {
       try {
         const mod = (globalThis as any).module;
         const createRequire = mod?.createRequire || (process as any).getBuiltinModule?.('module')?.createRequire;
         if (createRequire) {
           const req = createRequire((process.cwd?.() || '') + '/');
           const cp = req('child_process');
-          execFileSync = cp.execFileSync;
+          execFile = cp.execFile;
           fs = req('fs');
           path = req('path');
           os = req('os');
@@ -208,7 +240,7 @@ function tryDecompileWithCfr(buffer: Uint8Array | any): string | null {
       } catch {}
     }
 
-    if (!execFileSync || !fs || !path || !os) {
+    if (!execFile || !fs || !path || !os) {
       return null;
     }
 
@@ -239,28 +271,25 @@ function tryDecompileWithCfr(buffer: Uint8Array | any): string | null {
 
     if (!cachedCfrJarPath) return null;
 
-    // Check if java executable is runnable (cached to avoid repeated process spawns)
-    if (cachedJavaAvailable === null) {
-      try {
-        execFileSync('java', ['-version'], {
-          stdio: 'ignore',
-          windowsHide: true,
-        });
-        cachedJavaAvailable = true;
-      } catch {
-        cachedJavaAvailable = false;
-      }
+    // Share one Java availability probe across simultaneous class decompiles.
+    if (!cachedJavaAvailability) {
+      cachedJavaAvailability = execFileAsync(execFile, 'java', ['-version'], {
+        windowsHide: true,
+        stdio: 'ignore',
+        timeout: 5000,
+        encoding: 'utf-8',
+      }).then(() => true, () => false);
     }
+    if (!await cachedJavaAvailability) return null;
 
-    if (!cachedJavaAvailable) return null;
-
-    // Write temp class file
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cfr-decompile-'));
-    const tmpClassFile = path.join(tmpDir, 'TargetClass.class');
-
+    const releaseSlot = await acquireCfrProcessSlot();
+    let tmpDir: string | null = null;
     try {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cfr-decompile-'));
+      const tmpClassFile = path.join(tmpDir, 'TargetClass.class');
       fs.writeFileSync(tmpClassFile, Buffer.from(buffer));
-      const output = execFileSync(
+      const output = await execFileAsync(
+        execFile,
         'java',
         [
           '-jar', cachedCfrJarPath, tmpClassFile,
@@ -285,9 +314,12 @@ function tryDecompileWithCfr(buffer: Uint8Array | any): string | null {
         return output.trim();
       }
     } finally {
-      try {
-        fs.rmSync(tmpDir, { recursive: true, force: true });
-      } catch {}
+      if (tmpDir) {
+        try {
+          fs.rmSync(tmpDir, { recursive: true, force: true });
+        } catch {}
+      }
+      releaseSlot();
     }
   } catch {
     // Fall back cleanly to TypeScript decompiler
@@ -300,33 +332,46 @@ function tryDecompileWithCfr(buffer: Uint8Array | any): string | null {
  * Tries CFR first for 100% source code accuracy.
  * Automatically falls back to full TypeScript bytecode decompiler if Java/CFR is unavailable.
  */
-export function decompileJavaClass(buffer: Uint8Array | any, classNameFallback = 'DecompiledClass'): string {
+export async function decompileJavaClass(
+  buffer: Uint8Array | any,
+  classNameFallback = 'DecompiledClass',
+  options: DecompileOptions = {}
+): Promise<string> {
   if (!isJavaClassBuffer(buffer)) {
     return `// Not a valid Java class file (missing CAFEBABE magic header)\n`;
   }
 
-  // Fast cache check by buffer signature
-  const hashKey = computeBufferHash(buffer);
-  if (decompileResultCache.has(hashKey)) {
-    return decompileResultCache.get(hashKey)!;
+  const engine = options.engine || 'auto';
+  const cacheEnabled = options.cache !== false;
+  const hashKey = `${engine}:${classNameFallback}:${computeBufferHash(buffer)}`;
+  if (cacheEnabled) {
+    const cached = decompileResultCache.get(hashKey);
+    if (cached !== undefined) return cached;
+    const pending = inFlightDecompiles.get(hashKey);
+    if (pending) return pending;
   }
 
-  // 1. Try CFR decompiler (100% genuine Java source code)
-  const cfrResult = tryDecompileWithCfr(buffer);
-  let finalResult = cfrResult;
+  const work = (async () => {
+    // CFR remains the Node implementation; the browser uses the same TS fallback as before.
+    const cfrResult = engine === 'typescript' ? null : await tryDecompileWithCfr(buffer);
+    const finalResult = cfrResult || decompileWithTypeScriptEngine(buffer, classNameFallback);
+    if (cacheEnabled) {
+      if (decompileResultCache.size >= MAX_DECOMPILE_CACHE_ITEMS) {
+        const firstKey = decompileResultCache.keys().next().value;
+        if (firstKey) decompileResultCache.delete(firstKey);
+      }
+      decompileResultCache.set(hashKey, finalResult);
+    }
+    return finalResult;
+  })();
 
-  // 2. TypeScript Full Decompiler & Bytecode Disassembler fallback
-  if (!finalResult) {
-    finalResult = decompileWithTypeScriptEngine(buffer, classNameFallback);
+  if (!cacheEnabled) return work;
+  inFlightDecompiles.set(hashKey, work);
+  try {
+    return await work;
+  } finally {
+    inFlightDecompiles.delete(hashKey);
   }
-
-  if (decompileResultCache.size >= MAX_DECOMPILE_CACHE_ITEMS) {
-    const firstKey = decompileResultCache.keys().next().value;
-    if (firstKey) decompileResultCache.delete(firstKey);
-  }
-  decompileResultCache.set(hashKey, finalResult);
-
-  return finalResult;
 }
 
 // -------------------------------------------------------------------------------------------------

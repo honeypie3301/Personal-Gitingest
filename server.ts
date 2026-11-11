@@ -443,7 +443,7 @@ app.post('/api/ingest', async (req, res) => {
             let fileHeader = file.relPath;
             if (file.relPath.toLowerCase().endsWith('.class')) {
               if (decompile_classes) {
-                content = decompileJavaClass(buf, path.basename(file.relPath, '.class'));
+                content = await decompileJavaClass(buf, path.basename(file.relPath, '.class'));
                 fileHeader += ' [Decompiled Java]';
               } else {
                 content = '[Binary file: Java Class file]';
@@ -642,7 +642,8 @@ app.post('/api/ingest', async (req, res) => {
         const MAX_ZIP_DIGEST_CHARS = 40 * 1024 * 1024; // 40MB limit
         let isZipTruncated = false;
 
-        const ZIP_CHUNK = 2; // Micro-chunking for instant live streaming
+        // Overlap more ZIP entry reads/decompression while retaining bounded memory use.
+        const ZIP_CHUNK = 4;
         for (let i = 0; i < fileEntries.length; i += ZIP_CHUNK) {
           if (clientDisconnected) return;
           if (totalChars >= MAX_ZIP_DIGEST_CHARS) {
@@ -658,7 +659,7 @@ app.post('/api/ingest', async (req, res) => {
                 if (relPath.toLowerCase().endsWith('.class')) {
                   const buf = await obj.async('nodebuffer');
                   if (decompile_classes) {
-                    content = decompileJavaClass(buf, path.basename(relPath, '.class'));
+                    content = await decompileJavaClass(buf, path.basename(relPath, '.class'));
                     fileHeader += ' [Decompiled Java]';
                   } else {
                     content = '[Binary file: Java Class file]';
@@ -917,7 +918,7 @@ app.post('/api/ingest', async (req, res) => {
             let fileHeader = file.relPath;
             if (file.relPath.toLowerCase().endsWith('.class')) {
               if (decompile_classes) {
-                content = decompileJavaClass(buf, path.basename(file.relPath, '.class'));
+                content = await decompileJavaClass(buf, path.basename(file.relPath, '.class'));
                 fileHeader += ' [Decompiled Java]';
               } else {
                 content = '[Binary file: Java Class file]';
