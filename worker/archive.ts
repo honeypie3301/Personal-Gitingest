@@ -22,7 +22,7 @@ export interface ArchiveOptions {
   max_file_size?: number;
   concurrency?: number;
   signal?: AbortSignal;
-  onProgress?: (files: number) => void;
+  onProgress?: (event: { path: string; count: number; total: number; status: 'completed' | 'binary' | 'decompiling' }) => void;
   preview_chars?: number;
   decompile_classes?: boolean;
 }
@@ -222,8 +222,18 @@ export async function ingestArchive(archive: string, contentFile: string, digest
         contentChars += block.length;
         totalChars += result.content.length;
         filesAnalyzed++;
+        const status = result.name.includes('[Decompiled Java]')
+          ? 'decompiling'
+          : result.content.startsWith('[Binary file')
+            ? 'binary'
+            : 'completed';
+        options.onProgress?.({
+          path: result.name.replace(/\s*\[Decompiled Java\]$/i, ''),
+          count: filesAnalyzed,
+          total: entries.length,
+          status,
+        });
       }
-      options.onProgress?.(i);
     }
     if (archiveError) throw archiveError;
     if (pendingBlocks.length) await output.writeFile(pendingBlocks.join(''), 'utf8');
@@ -380,8 +390,18 @@ export async function ingestDirectory(dir: string, contentFile: string, digestFi
         contentChars += block.length;
         totalChars += result.content.length;
         filesAnalyzed++;
+        const status = result.name.includes('[Decompiled Java]')
+          ? 'decompiling'
+          : result.content.startsWith('[Binary file')
+            ? 'binary'
+            : 'completed';
+        options.onProgress?.({
+          path: result.name.replace(/\s*\[Decompiled Java\]$/i, ''),
+          count: filesAnalyzed,
+          total: entries.length,
+          status,
+        });
       }
-      options.onProgress?.(i);
     }
     if (pendingBlocks.length) await output.writeFile(pendingBlocks.join(''), 'utf8');
     const estimatedTokens = formatTokens(Math.round(totalChars / 4));

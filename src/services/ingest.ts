@@ -424,7 +424,7 @@ export async function performIngest(request: IngestRequest, signal?: AbortSignal
       const data = await readApiResponse<IngestResponse | WorkerJob>(response, 'Unable to ingest repository');
       if ('id' in data && data.id && data.state) {
         workerStarted = true;
-        return await waitForWorkerJob(data, headers, signal);
+        return await waitForWorkerJob(data, headers, signal, request.onProgress);
       }
       if ('tree' in data && typeof data.tree === 'string' && typeof data.content === 'string') {
         return data;

@@ -8,7 +8,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { parseGitHubUrl } from '../src/services/ingestFormatting.js';
 import { downloadArchive, ingestArchive, ingestDirectory, sparseClone } from './archive.js';
 import { ArtifactStorage } from './storage.js';
-import type { IngestRequest } from '../src/types/index.js';
+import type { IngestFileEvent, IngestRequest } from '../src/types/index.js';
 import { GitHubRateLimitError, githubRateLimitMessage } from '../src/services/githubRateLimit.js';
 
 type State = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
@@ -19,6 +19,7 @@ interface Job {
   phase: string;
   created: number;
   files_processed: number;
+  progress?: IngestFileEvent[];
   commit: string;
   error?: string;
   timings?: Record<string, number>;
@@ -247,7 +248,13 @@ export async function createWorkerApp() {
           let lastProgress = 0;
           const ingestOptions = {
             ...options, concurrency: Number(process.env.INGEST_CONCURRENCY || 4), signal: controller.signal,
-            onProgress: (files: number) => { job.files_processed = files; lastProgress = files; },
+            onProgress: (event: IngestFileEvent) => {
+              job.files_processed = event.count;
+              job.progress ||= [];
+              job.progress.push(event);
+              if (job.progress.length > 500) job.progress.splice(0, job.progress.length - 500);
+              lastProgress = event.count;
+            },
           };
           const processed = sparse
             ? await ingestDirectory(checkout, contentPart, digestPart, ingestOptions)

@@ -310,7 +310,7 @@ app.post('/api/ingest', async (req, res) => {
 
 
   const acceptHeader = (req.headers.accept || '').toLowerCase();
-  const isNdjson = !req.headers['x-no-stream'] && (
+  const isNdjson = !process.env.INGEST_WORKER_URL && !req.headers['x-no-stream'] && (
     !acceptHeader ||
     acceptHeader.includes('application/x-ndjson') ||
     acceptHeader.includes('*/*') ||
@@ -1074,7 +1074,9 @@ async function startServer() {
   } catch {}
 
   const distPath = path.join(process.cwd(), 'dist');
-  const isExplicitDev = process.env.NODE_ENV === 'development';
+  const entryPath = process.argv[1] ? path.resolve(process.argv[1]) : '';
+  const isSourceServer = /\.[cm]?tsx?$/i.test(entryPath);
+  const isExplicitDev = process.env.NODE_ENV === 'development' || isSourceServer;
   const hasDist = fs.existsSync(path.join(distPath, 'index.html'));
 
   if (!isExplicitDev && hasDist) {
