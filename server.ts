@@ -318,6 +318,7 @@ app.post('/api/ingest', async (req, res) => {
   );
   if (isNdjson) {
     res.setHeader('Content-Type', 'application/x-ndjson');
+    res.setHeader('Transfer-Encoding', 'chunked');
     res.setHeader('Cache-Control', 'no-cache, no-transform');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-Accel-Buffering', 'no');

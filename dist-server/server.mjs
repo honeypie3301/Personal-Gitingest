@@ -1401,6 +1401,7 @@ app.post("/api/ingest", async (req, res) => {
   const isNdjson = !req.headers["x-no-stream"] && (!acceptHeader || acceptHeader.includes("application/x-ndjson") || acceptHeader.includes("*/*") || acceptHeader.includes("text/event-stream"));
   if (isNdjson) {
     res.setHeader("Content-Type", "application/x-ndjson");
+    res.setHeader("Transfer-Encoding", "chunked");
     res.setHeader("Cache-Control", "no-cache, no-transform");
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("X-Accel-Buffering", "no");
