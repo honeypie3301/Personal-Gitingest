@@ -465,7 +465,7 @@ export default function App() {
         <div className="max-w-6xl 2xl:max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex items-center justify-center gap-4">
           <div className="flex items-center gap-4 text-xs font-bold text-gray-400">
             <a
-              href={import.meta.env.VITE_GITHUB_REPO_URL || "https://github.com/honeypie3301"}
+              href="https://github.com/honeypie3301/Personal-Gitingest"
               target="_blank"
               rel="noreferrer"
               className="hover:text-amber-400 transition-colors"
