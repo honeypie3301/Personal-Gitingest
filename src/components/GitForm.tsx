@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ArrowRight, ShieldCheck, Key, RefreshCw, ChevronDown, Lock, FolderGit2, XCircle, Check, Clock, X, Star, Activity, ListFilter, FileText, FolderArchive } from 'lucide-react';
+import { ArrowRight, ShieldCheck, Key, RefreshCw, ChevronDown, Lock, FolderGit2, XCircle, Check, Clock, X, Star, Activity, ListFilter, FileText, FolderArchive, SlidersHorizontal } from 'lucide-react';
 import { IngestRequest, PatternType, TokenStatus, IngestFileEvent, IngestionOutputFormat } from '../types';
 import { getSavedPatterns, savePatterns, getSavedToken, getSavedDecompileClasses, saveDecompileClasses, getSavedMaxOutputSize, saveMaxOutputSize, getSavedOutputFormat, saveOutputFormat } from '../services/ingest';
 import { fetchUserRepos, RepoSummary } from '../services/githubApi';
@@ -75,6 +75,9 @@ export const GitForm: React.FC<GitFormProps> = React.memo(({
 
   // Ingestion Output Mode: 'text' (default digest) or 'zip' (individual files)
   const [outputFormat, setOutputFormat] = useState<IngestionOutputFormat>('text');
+
+  // Toggle state for collapsible advanced settings drawer
+  const [isAdvancedOpen, setIsAdvancedOpen] = useState(false);
 
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [isUnitDropdownOpen, setIsUnitDropdownOpen] = useState(false);
@@ -499,8 +502,39 @@ export const GitForm: React.FC<GitFormProps> = React.memo(({
               </div>
             )}
 
-            {/* Controls Row: Pattern filter & Max Size Slider (up to 500 MB) */}
-            <div className="pt-3 border-t-2 border-[#30363d] grid grid-cols-1 md:grid-cols-12 gap-3 sm:gap-4 items-center relative z-40">
+            {/* Advanced Settings Toggle */}
+            <div className="pt-2 border-t-2 border-[#30363d]/70 flex items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={() => setIsAdvancedOpen((prev) => !prev)}
+                className="text-xs font-extrabold text-gray-300 hover:text-amber-400 flex items-center gap-1.5 transition-colors cursor-pointer py-1 select-none"
+              >
+                <SlidersHorizontal className="w-3.5 h-3.5 text-amber-400" />
+                <span>Advanced Filters & Limits</span>
+                <ChevronDown className={`w-3.5 h-3.5 transition-transform duration-200 ${isAdvancedOpen ? 'rotate-180 text-amber-400' : 'text-gray-400'}`} />
+              </button>
+
+              {!isAdvancedOpen && (
+                <div className="flex items-center gap-2 text-[11px] font-mono">
+                  {pattern.trim() ? (
+                    <span className="bg-[#161b22] px-2 py-0.5 rounded border border-[#30363d] text-amber-300 truncate max-w-[150px] sm:max-w-[220px]">
+                      {patternType.toUpperCase()}: {pattern.trim()}
+                    </span>
+                  ) : (
+                    <span className="text-gray-500 hidden sm:inline">No filter active</span>
+                  )}
+                  <span className="bg-[#161b22] px-2 py-0.5 rounded border border-[#30363d] text-gray-300">
+                    Max: {maxFileSize}{sizeUnit}
+                  </span>
+                </div>
+              )}
+            </div>
+
+            {/* Collapsible Controls Area */}
+            {isAdvancedOpen && (
+              <div className="space-y-3 pt-1">
+                {/* Controls Row: Pattern filter & Max Size Slider (up to 500 MB) */}
+                <div className="grid grid-cols-1 md:grid-cols-12 gap-3 sm:gap-4 items-center relative z-40">
               {/* Pattern Type & Pattern Input */}
               <div className="md:col-span-7 relative z-40">
                 <div className="w-full h-full rounded bg-black translate-y-1 translate-x-1 absolute inset-0"></div>
@@ -810,6 +844,8 @@ export const GitForm: React.FC<GitFormProps> = React.memo(({
                 </div>
               </div>
             </div>
+          </div>
+        )}
 
             {/* Private Repository / PAT Custom Status Bar */}
             <div className="p-2.5 sm:p-3 bg-[#0d1117] rounded-xl border-2 border-[#30363d] flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2.5">

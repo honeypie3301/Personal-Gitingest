@@ -4,7 +4,7 @@ import { IngestResponse } from '../types';
 import { IngestionTimer, formatDuration } from './IngestionTimer';
 import { artifactUrl, fullDigestSection } from '../services/digestExport';
 import { splitDigestSafely, downloadSplitPartsAsZip, SplitPart } from '../services/textSplitter';
-import { downloadIndividualFilesAsZip } from '../services/zipExporter';
+import { downloadIndividualFilesAsZip, extractIndividualFiles } from '../services/zipExporter';
 import { getSavedMaxOutputSize } from '../services/ingest';
 
 // Threshold above which we avoid mounting a single giant string into a DOM textarea to prevent tab crashes
@@ -39,6 +39,42 @@ export const ResultSection: React.FC<ResultSectionProps> = React.memo(({
   const [isSplittingDownload, setIsSplittingDownload] = useState(false);
   const [isZipping, setIsZipping] = useState(false);
   const [zipProgress, setZipProgress] = useState<{ percent: number; file: string }>({ percent: 0, file: '' });
+  const [showBreakdown, setShowBreakdown] = useState(false);
+
+  const breakdownData = useMemo(() => {
+    if (!result) return null;
+    const extracted = extractIndividualFiles(result);
+    if (!extracted || extracted.length === 0) return null;
+
+    const fileStats = extracted.map((f) => {
+      const chars = f.text.length;
+      const tokens = Math.round(chars / 4);
+      return { path: f.path, chars, tokens };
+    });
+
+    fileStats.sort((a, b) => b.tokens - a.tokens);
+
+    const totalTokens = fileStats.reduce((sum, f) => sum + f.tokens, 0) || 1;
+    const topFiles = fileStats.slice(0, 8);
+
+    const dirMap: Record<string, number> = {};
+    for (const f of fileStats) {
+      const parts = f.path.split('/');
+      const rootDir = parts.length > 1 ? parts[0] + '/' : 'root files';
+      dirMap[rootDir] = (dirMap[rootDir] || 0) + f.tokens;
+    }
+
+    const dirStats = Object.entries(dirMap)
+      .map(([dir, tokens]) => ({ dir, tokens, pct: Math.round((tokens / totalTokens) * 100) }))
+      .sort((a, b) => b.tokens - a.tokens);
+
+    return {
+      totalFiles: fileStats.length,
+      totalTokens,
+      topFiles,
+      dirStats: dirStats.slice(0, 6),
+    };
+  }, [result]);
 
   const handleDownloadZip = async () => {
     if (!result) return;
@@ -354,6 +390,95 @@ export const ResultSection: React.FC<ResultSectionProps> = React.memo(({
         <div className="w-full h-full absolute inset-0 bg-black rounded-2xl translate-y-2 translate-x-2"></div>
         <div className="bg-[#161b22] rounded-2xl border-[3px] border-[#30363d] p-4 sm:p-6 lg:p-8 relative z-20 space-y-6 text-gray-100">
           
+          {/* Token Breakdown Visualizer Toggle Bar */}
+          {breakdownData && (
+            <div className="flex items-center justify-between pb-1 border-b border-[#30363d]">
+              <div className="flex items-center gap-2">
+                <BarChart3 className="w-4 h-4 text-amber-400" />
+                <span className="text-xs sm:text-sm font-extrabold text-white uppercase tracking-wider">
+                  Token Breakdown & Distribution
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowBreakdown((prev) => !prev)}
+                className={`px-3 py-1 rounded-lg text-xs font-bold border-2 transition-all flex items-center gap-1.5 cursor-pointer shadow-[1px_1px_0_0_#000000] ${
+                  showBreakdown
+                    ? 'bg-amber-500 text-gray-950 border-amber-600'
+                    : 'bg-[#21262d] text-amber-300 border-[#30363d] hover:bg-[#30363d]'
+                }`}
+              >
+                <span>{showBreakdown ? 'Hide Breakdown' : 'Show Token Breakdown'}</span>
+              </button>
+            </div>
+          )}
+
+          {/* Token & File Breakdown Visualizer Panel */}
+          {showBreakdown && breakdownData && (
+            <div className="bg-[#0d1117] border-[3px] border-[#30363d] rounded-xl p-4 space-y-4 font-mono text-xs shadow-[2px_2px_0_0_#000000] animate-in fade-in duration-200">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {/* Top Token Consumers */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between text-amber-400 font-bold border-b border-[#30363d] pb-1 text-[11px] uppercase tracking-wider">
+                    <span>Top Token-Heavy Files</span>
+                    <span>Tokens (% share)</span>
+                  </div>
+                  <div className="space-y-2 max-h-[220px] overflow-y-auto pr-1">
+                    {breakdownData.topFiles.map((file) => {
+                      const pct = Math.round((file.tokens / breakdownData.totalTokens) * 100);
+                      return (
+                        <div key={file.path} className="space-y-0.5">
+                          <div className="flex items-center justify-between text-gray-300 text-[11px]">
+                            <span className="truncate max-w-[220px]" title={file.path}>
+                              {file.path}
+                            </span>
+                            <span className="text-amber-300 font-bold shrink-0">
+                              {file.tokens.toLocaleString()} ({pct}%)
+                            </span>
+                          </div>
+                          <div className="w-full bg-[#161b22] h-1.5 rounded-full overflow-hidden border border-[#30363d]">
+                            <div
+                              className="bg-amber-400 h-full rounded-full transition-all duration-300"
+                              style={{ width: `${Math.max(4, pct)}%` }}
+                            />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Directory Token Distribution */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between text-amber-400 font-bold border-b border-[#30363d] pb-1 text-[11px] uppercase tracking-wider">
+                    <span>Folder Share</span>
+                    <span>Tokens</span>
+                  </div>
+                  <div className="space-y-2 max-h-[220px] overflow-y-auto pr-1">
+                    {breakdownData.dirStats.map((dir) => (
+                      <div key={dir.dir} className="space-y-0.5">
+                        <div className="flex items-center justify-between text-gray-300 text-[11px]">
+                          <span className="truncate max-w-[180px] font-bold text-gray-200">
+                            {dir.dir}
+                          </span>
+                          <span className="text-amber-300 font-bold shrink-0">
+                            {dir.tokens.toLocaleString()} ({dir.pct}%)
+                          </span>
+                        </div>
+                        <div className="w-full bg-[#161b22] h-1.5 rounded-full overflow-hidden border border-[#30363d]">
+                          <div
+                            className="bg-amber-500 h-full rounded-full transition-all duration-300"
+                            style={{ width: `${Math.max(4, dir.pct)}%` }}
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Top Row: Summary & Tree */}
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
             {/* Summary column */}
