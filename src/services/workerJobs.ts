@@ -1,4 +1,4 @@
-import type { IngestFileEvent, IngestResponse } from '../types';
+import type { IngestResponse } from '../types';
 import { readApiResponse } from './apiResponse';
 
 export interface WorkerJob {
@@ -6,7 +6,6 @@ export interface WorkerJob {
   state: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
   result?: IngestResponse;
   error?: string;
-  progress?: IngestFileEvent[];
 }
 
 function wait(ms: number, signal?: AbortSignal) {
@@ -18,22 +17,8 @@ function wait(ms: number, signal?: AbortSignal) {
   });
 }
 
-export async function waitForWorkerJob(
-  initial: WorkerJob,
-  headers: Record<string, string>,
-  signal?: AbortSignal,
-  onProgress?: (event: IngestFileEvent) => void
-): Promise<IngestResponse> {
+export async function waitForWorkerJob(initial: WorkerJob, headers: Record<string, string>, signal?: AbortSignal): Promise<IngestResponse> {
   let job = initial;
-  let lastProgressCount = 0;
-  const emitProgress = (next: WorkerJob) => {
-    for (const event of next.progress || []) {
-      if (event.count <= lastProgressCount) continue;
-      onProgress?.(event);
-      lastProgressCount = event.count;
-    }
-  };
-  emitProgress(job);
   const url = `/api/ingest/jobs/${encodeURIComponent(job.id)}`;
   const cancel = () => { void fetch(url, { method: 'DELETE', headers, keepalive: true }).catch(() => {}); };
   signal?.addEventListener('abort', cancel, { once: true });
@@ -56,7 +41,6 @@ export async function waitForWorkerJob(
       const data = await readApiResponse<WorkerJob>(response, 'Unable to read ingestion progress');
       if (!response.ok) throw new Error(data.error || 'Unable to read ingestion progress.');
       job = data;
-      emitProgress(job);
     }
   } finally { signal?.removeEventListener('abort', cancel); }
 }

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ArrowRight, ShieldCheck, Key, RefreshCw, ChevronDown, Lock, FolderGit2, XCircle, Check, Clock, X, Star, Activity, ListFilter } from 'lucide-react';
-import { IngestRequest, PatternType, TokenStatus, IngestFileEvent } from '../types';
-import { getSavedPatterns, savePatterns, getSavedToken, getSavedDecompileClasses, saveDecompileClasses, getSavedMaxOutputSize, saveMaxOutputSize } from '../services/ingest';
+import { ArrowRight, ShieldCheck, Key, RefreshCw, ChevronDown, Lock, FolderGit2, XCircle, Check, Clock, X, Star, Activity, ListFilter, FileText, FolderArchive } from 'lucide-react';
+import { IngestRequest, PatternType, TokenStatus, IngestFileEvent, IngestionOutputFormat } from '../types';
+import { getSavedPatterns, savePatterns, getSavedToken, getSavedDecompileClasses, saveDecompileClasses, getSavedMaxOutputSize, saveMaxOutputSize, getSavedOutputFormat, saveOutputFormat } from '../services/ingest';
 import { fetchUserRepos, RepoSummary } from '../services/githubApi';
 import { IngestionTimer } from './IngestionTimer';
 import { LiveIngestionView } from './LiveIngestionView';
@@ -73,6 +73,9 @@ export const GitForm: React.FC<GitFormProps> = React.memo(({
   const [outputUnit, setOutputUnit] = useState<SizeUnit>('MB');
   const [displayOutputSize, setDisplayOutputSize] = useState('50');
 
+  // Ingestion Output Mode: 'text' (default digest) or 'zip' (individual files)
+  const [outputFormat, setOutputFormat] = useState<IngestionOutputFormat>('text');
+
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [isUnitDropdownOpen, setIsUnitDropdownOpen] = useState(false);
   const [isOutputUnitDropdownOpen, setIsOutputUnitDropdownOpen] = useState(false);
@@ -104,6 +107,7 @@ export const GitForm: React.FC<GitFormProps> = React.memo(({
     setOutputUnit('MB');
 
     setDecompileClasses(getSavedDecompileClasses());
+    setOutputFormat(getSavedOutputFormat());
     setRecentIngests(getRecentIngests());
 
     const { favorites, recents } = getPatternItems();
@@ -175,6 +179,11 @@ export const GitForm: React.FC<GitFormProps> = React.memo(({
     const repos = await fetchUserRepos(token || undefined, userLogin);
     setUserRepos(repos);
     setIsLoadingRepos(false);
+  };
+
+  const handleOutputFormatChange = (fmt: IngestionOutputFormat) => {
+    setOutputFormat(fmt);
+    saveOutputFormat(fmt);
   };
 
   const handleDecompileChange = (enabled: boolean) => {
@@ -284,6 +293,7 @@ export const GitForm: React.FC<GitFormProps> = React.memo(({
       pattern: pattern.trim(),
       max_file_size: maxFileSize,
       decompile_classes: decompileClasses,
+      output_format: outputFormat,
     });
   };
 
@@ -302,6 +312,7 @@ export const GitForm: React.FC<GitFormProps> = React.memo(({
       pattern: pattern.trim(),
       max_file_size: maxFileSize,
       decompile_classes: decompileClasses,
+      output_format: outputFormat,
     });
   };
 
@@ -319,6 +330,7 @@ export const GitForm: React.FC<GitFormProps> = React.memo(({
       pattern: pattern.trim(),
       max_file_size: maxFileSize,
       decompile_classes: decompileClasses,
+      output_format: outputFormat,
     });
   };
 

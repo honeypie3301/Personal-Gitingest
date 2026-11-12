@@ -10,6 +10,7 @@ const PATTERN_VALUE_KEY = 'gitingest_pattern_val';
 const MAX_FILE_SIZE_KEY = 'gitingest_max_file_size';
 const MAX_OUTPUT_SIZE_KEY = 'gitingest_max_output_size';
 const DECOMPILE_CLASSES_KEY = 'gitingest_decompile_classes';
+const OUTPUT_FORMAT_KEY = 'gitingest_output_format';
 const OWNER_PIN_KEY = 'gitingest_owner_pin';
 const AUTH_CACHE_KEY = 'gitingest_auth_cache';
 const AUTH_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
@@ -81,6 +82,23 @@ export function saveDecompileClasses(enabled: boolean): void {
     localStorage.setItem(DECOMPILE_CLASSES_KEY, enabled ? 'true' : 'false');
   } catch (e) {
     console.error('Failed to save decompile classes preference', e);
+  }
+}
+
+export function getSavedOutputFormat(): 'text' | 'zip' {
+  try {
+    const val = localStorage.getItem(OUTPUT_FORMAT_KEY);
+    return val === 'zip' ? 'zip' : 'text';
+  } catch {
+    return 'text';
+  }
+}
+
+export function saveOutputFormat(format: 'text' | 'zip'): void {
+  try {
+    localStorage.setItem(OUTPUT_FORMAT_KEY, format);
+  } catch (e) {
+    console.error('Failed to save output format preference', e);
   }
 }
 
@@ -424,9 +442,12 @@ export async function performIngest(request: IngestRequest, signal?: AbortSignal
       const data = await readApiResponse<IngestResponse | WorkerJob>(response, 'Unable to ingest repository');
       if ('id' in data && data.id && data.state) {
         workerStarted = true;
-        return await waitForWorkerJob(data, headers, signal, request.onProgress);
+        return await waitForWorkerJob(data, headers, signal);
       }
       if ('tree' in data && typeof data.tree === 'string' && typeof data.content === 'string') {
+        if (!data.output_format && payload.output_format) {
+          data.output_format = payload.output_format;
+        }
         return data;
       }
       throw new Error('Unable to ingest repository. The server returned an incomplete response.');
@@ -470,7 +491,11 @@ export async function performIngest(request: IngestRequest, signal?: AbortSignal
     );
   }
 
-  return await ingestViaGitHubApi(payload, tokenToUse, signal);
+  const fallbackResult = await ingestViaGitHubApi(payload, tokenToUse, signal);
+  if (!fallbackResult.output_format && payload.output_format) {
+    fallbackResult.output_format = payload.output_format;
+  }
+  return fallbackResult;
 }
 
 /** Returns true if the input looks like a local filesystem path (Windows or Unix). */

@@ -1,3 +1,5 @@
+export type IngestionOutputFormat = 'text' | 'zip';
+
 export type PatternType = 'exclude' | 'include';
 
 export interface IngestFileEvent {
@@ -14,6 +16,7 @@ export interface IngestRequest {
   pattern?: string;
   token?: string;
   decompile_classes?: boolean;
+  output_format?: IngestionOutputFormat;
   onProgress?: (event: IngestFileEvent) => void;
 }
 
@@ -34,6 +37,8 @@ export interface IngestResponse {
   content_chars?: number;
   mode_info?: string;
   mode_switched?: boolean;
+  output_format?: IngestionOutputFormat;
+  files?: Array<{ path: string; text?: string }>;
   // Browser-only callback; credentials stay in its closure, never in worker metadata.
   refreshArtifactUrl?: () => Promise<string>;
 }

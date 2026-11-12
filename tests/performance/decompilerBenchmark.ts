@@ -37,7 +37,7 @@ if (!inputDirectory) {
       for (let round = 0; round < rounds; round++) {
         const start = performance.now();
         const outputs = await Promise.all(validClasses.map(item =>
-          decompileJavaClass(item.bytes, item.name, { engine, cache: false })
+          decompileJavaClass(item.bytes, item.name)
         ));
         durations.push(performance.now() - start);
         outputCharacters = outputs.reduce((total, output) => total + output.length, 0);

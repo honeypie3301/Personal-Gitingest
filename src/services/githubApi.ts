@@ -381,8 +381,10 @@ export async function ingestViaGitHubApi(
     })
   );
 
+  const individualFiles: Array<{ path: string; text: string }> = [];
   for (const item of results) {
     if (item && typeof item.text === 'string') {
+      individualFiles.push(item);
       totalChars += item.text.length;
       fileContents.push(
         `================================================\nFile: ${item.path}\n================================================\n${item.text}\n`
@@ -413,5 +415,7 @@ export async function ingestViaGitHubApi(
     total_chars: totalChars,
     mode_switched: true,
     mode_info: 'Switched to CORS-Safe REST (Rate-limit bypassed)',
+    files: individualFiles,
+    output_format: req.output_format || 'text',
   };
 }

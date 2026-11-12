@@ -1,9 +1,10 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { Copy, Check, Download, FolderTree, FileText, BarChart3, Hash, Cpu, XCircle, Timer, AlertCircle, FileArchive, Layers } from 'lucide-react';
+import { Copy, Check, Download, FolderTree, FileText, BarChart3, Hash, Cpu, XCircle, Timer, AlertCircle, FileArchive, Layers, FolderArchive } from 'lucide-react';
 import { IngestResponse } from '../types';
 import { IngestionTimer, formatDuration } from './IngestionTimer';
 import { artifactUrl, fullDigestSection } from '../services/digestExport';
 import { splitDigestSafely, downloadSplitPartsAsZip, SplitPart } from '../services/textSplitter';
+import { downloadIndividualFilesAsZip } from '../services/zipExporter';
 import { getSavedMaxOutputSize } from '../services/ingest';
 
 // Threshold above which we avoid mounting a single giant string into a DOM textarea to prevent tab crashes
@@ -36,6 +37,23 @@ export const ResultSection: React.FC<ResultSectionProps> = React.memo(({
   const [copiedSection, setCopiedSection] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [isSplittingDownload, setIsSplittingDownload] = useState(false);
+  const [isZipping, setIsZipping] = useState(false);
+  const [zipProgress, setZipProgress] = useState<{ percent: number; file: string }>({ percent: 0, file: '' });
+
+  const handleDownloadZip = async () => {
+    if (!result) return;
+    try {
+      setIsZipping(true);
+      setZipProgress({ percent: 0, file: 'Packaging individual files...' });
+      await downloadIndividualFilesAsZip(result, undefined, (percent, file) => {
+        setZipProgress({ percent, file });
+      });
+    } catch (err: any) {
+      setActionError(err.message || 'ZIP packaging failed');
+    } finally {
+      setIsZipping(false);
+    }
+  };
 
   const splitInfo = useMemo(() => {
     if (!result) return null;
@@ -63,19 +81,24 @@ export const ResultSection: React.FC<ResultSectionProps> = React.memo(({
 
   const summaryWithFileSize = useMemo(() => {
     if (!result?.summary) return '';
-    // If summary already contains File size or Size, return as-is
-    if (/(?:file\s*size|estimated\s*size|size):/i.test(result.summary)) {
-      return result.summary;
-    }
     const formattedSize = formatBytes(estimatedBytes);
+    const modeLabel = result.output_format === 'zip' ? 'Individual Files (.zip)' : 'Text Digest (.txt)';
     const lines = result.summary.split('\n');
-    const totalCharsIndex = lines.findIndex((l) => /total characters:/i.test(l));
-    if (totalCharsIndex !== -1) {
-      lines.splice(totalCharsIndex + 1, 0, `File size: ${formattedSize}`);
-      return lines.join('\n');
+
+    // Insert Mode and File size
+    if (!lines.some((l) => /ingestion mode:/i.test(l))) {
+      lines.push(`Ingestion mode: ${modeLabel}`);
     }
-    return `${result.summary}\nFile size: ${formattedSize}`;
-  }, [result?.summary, estimatedBytes]);
+    if (!lines.some((l) => /(?:file\s*size|estimated\s*size|size):/i.test(l))) {
+      const totalCharsIndex = lines.findIndex((l) => /total characters:/i.test(l));
+      if (totalCharsIndex !== -1) {
+        lines.splice(totalCharsIndex + 1, 0, `File size: ${formattedSize}`);
+      } else {
+        lines.push(`File size: ${formattedSize}`);
+      }
+    }
+    return lines.join('\n');
+  }, [result?.summary, result?.output_format, estimatedBytes]);
 
   const isHugeContent = useMemo(() => {
     return Boolean(result?.content_preview_truncated || (result?.content && result.content.length > MAX_PREVIEW_CHARS));
@@ -269,6 +292,18 @@ export const ResultSection: React.FC<ResultSectionProps> = React.memo(({
                 : splitInfo?.isSplit
                 ? `Download (~${splitInfo.estimatedParts} parts)`
                 : 'Download'}
+            </span>
+          </button>
+
+          <button
+            onClick={handleDownloadZip}
+            disabled={isZipping}
+            className="h-full py-2.5 px-3 bg-[#1e242c] hover:bg-[#28323d] disabled:opacity-50 border-2 border-amber-500/50 hover:border-amber-400 text-amber-300 font-bold rounded-xl text-xs sm:text-sm transition-transform active:translate-y-0.5 shadow-[2px_2px_0_0_#000000] flex items-center justify-center gap-1.5 cursor-pointer"
+            title="Download all repository files individually packaged in a structured .zip archive"
+          >
+            <FolderArchive className="w-4 h-4 text-amber-400" />
+            <span className="hidden sm:inline">
+              {isZipping ? `Zipping (${zipProgress.percent}%)...` : 'Download ZIP'}
             </span>
           </button>
         </div>
