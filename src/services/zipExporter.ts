@@ -60,13 +60,30 @@ export function normalizeZipPath(rawPath: string): string {
 }
 
 /**
+ * Determines optimal ZIP compression method:
+ * - On Localhost / local loopback: Defaults to 'STORE' (0% CPU compression pass, ~3x-5x faster packaging)
+ * - On Remote / Hosted deployments: Defaults to 'DEFLATE' (reduces bandwidth footprint)
+ */
+export function getBestCompressionMethod(preferred?: 'DEFLATE' | 'STORE' | 'auto'): 'DEFLATE' | 'STORE' {
+  if (preferred && preferred !== 'auto') return preferred;
+  if (typeof window !== 'undefined') {
+    const host = window.location.hostname;
+    if (host === 'localhost' || host === '127.0.0.1' || host.endsWith('.local')) {
+      return 'STORE';
+    }
+  }
+  return 'DEFLATE';
+}
+
+/**
  * Creates and downloads a .zip archive where each ingested file is individually placed
  * in its respective directory structure, with optional SUMMARY.txt and DIRECTORY_STRUCTURE.txt.
  */
 export async function downloadIndividualFilesAsZip(
   result: IngestResponse,
   customZipName?: string,
-  onProgress?: (percent: number, currentFile: string) => void
+  onProgress?: (percent: number, currentFile: string) => void,
+  preferredMethod: 'DEFLATE' | 'STORE' | 'auto' = 'auto'
 ): Promise<void> {
   const files = extractIndividualFiles(result);
   const zip = new JSZip();
@@ -91,28 +108,29 @@ export async function downloadIndividualFilesAsZip(
     }
   }
 
-  // 3. Generate ZIP binary blob with compression
-  const blob = await zip.generateAsync(
-    {
-      type: 'blob',
-      compression: 'DEFLATE',
-      compressionOptions: { level: 6 },
-    },
-    (metadata) => {
-      if (onProgress) {
-        onProgress(50 + Math.round(metadata.percent / 2), metadata.currentFile || 'Compressing archive...');
-      }
-    }
-  );
+  // 3. Auto-detect optimal compression method (STORE on localhost, DEFLATE on cloud)
+  const method = getBestCompressionMethod(preferredMethod);
+  const zipOptions: JSZip.JSZipGeneratorOptions<'blob'> = {
+    type: 'blob',
+    compression: method,
+    ...(method === 'DEFLATE' ? { compressionOptions: { level: 6 } } : {}),
+  };
 
-  // 4. Determine file name
+  // 4. Generate ZIP binary blob
+  const blob = await zip.generateAsync(zipOptions, (metadata) => {
+    if (onProgress) {
+      onProgress(50 + Math.round(metadata.percent / 2), metadata.currentFile || 'Compressing archive...');
+    }
+  });
+
+  // 5. Determine file name
   const repoSlug = (result.repo_name || 'repository').replace(/[/\\:]/g, '_');
   const subSlug = result.subpath
     ? `_${result.subpath.replace(/^[/\\]+|[/\\]+$/g, '').replace(/[/\\:]/g, '_')}`
     : '';
   const finalFilename = customZipName || `${repoSlug}${subSlug}_files.zip`;
 
-  // 5. Trigger download
+  // 6. Trigger download
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement('a');
   anchor.href = url;
